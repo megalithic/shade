@@ -76,16 +76,16 @@ func findGhosttyKit() -> GhosttyKitPaths {
 let ghostty = findGhosttyKit()
 
 let package = Package(
-    name: "MegaNote",
+    name: "meganote",
     platforms: [
         .macOS(.v13)
     ],
     products: [
-        .executable(name: "MegaNote", targets: ["MegaNote"])
+        .executable(name: "meganote", targets: ["meganote"])
     ],
     targets: [
         .executableTarget(
-            name: "MegaNote",
+            name: "meganote",
             path: "Sources",
             swiftSettings: [
                 // Import path for GhosttyKit module

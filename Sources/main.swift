@@ -11,31 +11,31 @@ enum Log {
     /// Log debug message (only when verbose is enabled)
     static func debug(_ message: @autoclosure () -> String) {
         if verbose {
-            print("[MegaNote] \(message())")
+            print("[meganote] \(message())")
         }
     }
 
     /// Log info message (only when verbose is enabled)
     static func info(_ message: @autoclosure () -> String) {
         if verbose {
-            print("[MegaNote] \(message())")
+            print("[meganote] \(message())")
         }
     }
 
     /// Log error message (always visible)
     static func error(_ message: @autoclosure () -> String) {
-        fputs("[MegaNote] ERROR: \(message())\n", stderr)
+        fputs("[meganote] ERROR: \(message())\n", stderr)
     }
 
     /// Log warning message (always visible)
     static func warn(_ message: @autoclosure () -> String) {
-        fputs("[MegaNote] WARN: \(message())\n", stderr)
+        fputs("[meganote] WARN: \(message())\n", stderr)
     }
 }
 
 // MARK: - Configuration
 
-/// Configuration for MegaNote, parsed from command-line args
+/// Configuration for meganote, parsed from command-line args
 struct AppConfig {
     /// Width as percentage of screen (0.0-1.0) or absolute pixels if > 1
     var width: Double = 0.45
@@ -95,9 +95,9 @@ struct AppConfig {
 
     static func printUsage() {
         print("""
-        MegaNote - Floating terminal panel powered by libghostty
+        meganote - Floating terminal panel powered by libghostty
 
-        Usage: MegaNote [options]
+        Usage: meganote [options]
 
         Options:
           -w, --width <value>      Width (0.0-1.0 for %, or pixels if > 1)
@@ -114,9 +114,9 @@ struct AppConfig {
           com.meganote.hide    Hide panel
 
         Examples:
-          MegaNote --width 0.5 --height 0.4 --command "nvim ~/notes/capture.md"
-          MegaNote -w 800 -h 600 --hidden
-          MegaNote --verbose  # Debug output
+          meganote --width 0.5 --height 0.4 --command "nvim ~/notes/capture.md"
+          meganote -w 800 -h 600 --hidden
+          meganote --verbose  # Debug output
         """)
     }
 }

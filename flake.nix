@@ -1,5 +1,5 @@
 {
-  description = "MegaNote - Floating terminal panel CLI using libghostty";
+  description = "meganote - Floating terminal panel CLI using libghostty";
 
   inputs = {
     nixpkgs.url = "github:NixOS/nixpkgs/nixpkgs-unstable";
@@ -122,7 +122,7 @@
           GHOSTTYKIT_PATH = "${ghosttyKit}";
 
           shellHook = ''
-            echo "🗒️  MegaNote development shell"
+            echo "🗒️  meganote development shell"
             echo "Swift: $(swift --version 2>/dev/null | head -1 || echo 'not found')"
             echo "Zig: $(zig version 2>/dev/null || echo 'not found')"
             echo ""
@@ -150,12 +150,12 @@
           GHOSTTYKIT_PATH = "${ghosttyKit}";
 
           shellHook = ''
-            echo "🗒️  MegaNote lite shell"
+            echo "🗒️  meganote lite shell"
             echo "✓ GhosttyKit: $GHOSTTYKIT_PATH"
           '';
         };
 
-        # MegaNote package
+        # meganote package
         packages.default = pkgs.stdenv.mkDerivation {
           pname = "meganote";
           inherit version;
@@ -191,16 +191,16 @@
           installPhase = ''
             runHook preInstall
             mkdir -p $out/bin
-            cp .build/release/MegaNote $out/bin/
+            cp .build/release/meganote $out/bin/
             runHook postInstall
           '';
 
           meta = with pkgs.lib; {
             description = "Floating terminal panel CLI using libghostty";
-            homepage = "https://github.com/megalithic/MegaNote";
+            homepage = "https://github.com/megalithic/meganote";
             license = licenses.mit;
             platforms = platforms.darwin;
-            mainProgram = "MegaNote";
+            mainProgram = "meganote";
           };
         };
 

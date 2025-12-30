@@ -1,16 +1,16 @@
-# MegaNote
+# meganote
 
 A **standalone CLI executable** for macOS that provides a floating terminal panel using [libghostty](https://github.com/ghostty-org/ghostty). Designed for quick note capture workflows with nvim.
 
 ## What It Is
 
-MegaNote is a **command-line tool**, not a traditional `.app` bundle or framework:
+meganote is a **command-line tool**, not a traditional `.app` bundle or framework:
 
 ```
-$ ./MegaNote --help
-MegaNote - Floating terminal panel powered by libghostty
+$ ./meganote --help
+meganote - Floating terminal panel powered by libghostty
 
-Usage: MegaNote [options]
+Usage: meganote [options]
 
 Options:
   -w, --width <value>      Width (0.0-1.0 for %, or pixels if > 1)
@@ -22,14 +22,14 @@ Options:
   --help                   Show this help
 ```
 
-When run, it creates a floating NSPanel window hosting a ghostty terminal surface. When the terminal process exits, MegaNote automatically terminates.
+When run, it creates a floating NSPanel window hosting a ghostty terminal surface. When the terminal process exits, meganote automatically terminates.
 
 ## Architecture
 
 ```
 ┌─────────────────────────────────────────────────────────────┐
 │                 Hammerspoon (Lua)                           │
-│  - Launches MegaNote via hs.task.new()                      │
+│  - Launches meganote via hs.task.new()                      │
 │  - Sends distributed notifications for show/hide/toggle     │
 └─────────────────────────────────────────────────────────────┘
                               │
@@ -37,7 +37,7 @@ When run, it creates a floating NSPanel window hosting a ghostty terminal surfac
                               │
                               ▼
 ┌─────────────────────────────────────────────────────────────┐
-│                 MegaNote (Swift CLI)                        │
+│                 meganote (Swift CLI)                        │
 ├─────────────────────────────────────────────────────────────┤
 │  main.swift          Entry point, CLI arg parsing           │
 │  MegaAppDelegate     App lifecycle, IPC listener, tick loop │
@@ -59,7 +59,7 @@ When run, it creates a floating NSPanel window hosting a ghostty terminal surfac
 
 ### IPC Protocol
 
-MegaNote listens for macOS distributed notifications:
+meganote listens for macOS distributed notifications:
 
 | Notification Name       | Action                    |
 |------------------------|---------------------------|
@@ -85,9 +85,9 @@ swift -e 'import Foundation; DistributedNotificationCenter.default().post(name: 
 The flake includes [Ghostty](https://github.com/ghostty-org/ghostty) as an input and builds GhosttyKit automatically:
 
 ```bash
-# Clone MegaNote
-git clone https://github.com/megalithic/MegaNote
-cd MegaNote
+# Clone meganote
+git clone https://github.com/megalithic/meganote
+cd meganote
 
 # Enter dev shell (builds GhosttyKit from source - may take a few minutes first time)
 nix develop
@@ -116,10 +116,10 @@ git clone https://github.com/ghostty-org/ghostty
 cd ghostty
 zig build -Doptimize=ReleaseFast
 
-# Clone and build MegaNote
+# Clone and build meganote
 cd ~/code
-git clone https://github.com/megalithic/MegaNote
-cd MegaNote
+git clone https://github.com/megalithic/meganote
+cd meganote
 
 # Verify GhosttyKit is found
 just check-deps
@@ -129,7 +129,7 @@ just release
 just install
 ```
 
-MegaNote auto-detects GhosttyKit in these locations:
+meganote auto-detects GhosttyKit in these locations:
 1. `GHOSTTYKIT_PATH` environment variable
 2. `./vendor/GhosttyKit` (vendored in repo)
 3. `~/src/ghostty/macos/GhosttyKit.xcframework/macos-arm64`
@@ -142,19 +142,19 @@ MegaNote auto-detects GhosttyKit in these locations:
 
 ```bash
 # Open default shell
-MegaNote
+meganote
 
 # Custom size (40% of screen)
-MegaNote --width 0.4 --height 0.4
+meganote --width 0.4 --height 0.4
 
 # Run nvim directly
-MegaNote --command nvim --working-directory ~/notes
+meganote --command nvim --working-directory ~/notes
 
 # Start hidden (show via IPC later)
-MegaNote --hidden
+meganote --hidden
 
 # Debug output
-MegaNote --verbose
+meganote --verbose
 ```
 
 ### With Hammerspoon
@@ -184,7 +184,7 @@ end)
 ```
 
 The `meganote.lua` module handles:
-- Launching MegaNote as a background process
+- Launching meganote as a background process
 - Sending IPC notifications to control visibility
 - Context-aware capture (gathers frontmost app info)
 - Opening files in nvim via `--remote`
@@ -194,7 +194,7 @@ The `meganote.lua` module handles:
 ### Project Structure
 
 ```
-MegaNote/
+meganote/
 ├── Package.swift          # Swift PM config (auto-detects GhosttyKit)
 ├── flake.nix             # Nix flake (builds GhosttyKit from ghostty input)
 ├── flake.lock            # Pinned dependencies including ghostty
@@ -238,7 +238,7 @@ just format             # Format code (needs swift-format)
 just lint               # Lint code
 
 # Nix
-just nix-build          # Build MegaNote with Nix
+just nix-build          # Build meganote with Nix
 just nix-build-ghosttykit # Build only GhosttyKit
 just nix-run [ARGS]     # Run with Nix
 just nix-develop        # Enter dev shell (full, with Zig)
@@ -297,7 +297,7 @@ $GHOSTTYKIT_PATH/
 # Just GhosttyKit (useful for other projects)
 nix build .#ghosttykit
 
-# MegaNote binary
+# meganote binary
 nix build .#meganote
 # or
 nix build  # default
@@ -335,7 +335,7 @@ There's no `ghostty_config_load_string()` — command/workingDir go in surface c
 
 ### Process Exit Detection
 
-MegaNote polls `ghostty_surface_process_exited()` in the 60fps tick timer. When the child process exits:
+meganote polls `ghostty_surface_process_exited()` in the 60fps tick timer. When the child process exits:
 1. Hide panel
 2. Terminate app
 
@@ -381,7 +381,7 @@ just rebuild-release
 Use `--verbose` or `-v` flag to enable debug logging:
 
 ```bash
-MegaNote --verbose
+meganote --verbose
 ```
 
 ### libghostty Migration Path

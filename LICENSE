@@ -58,7 +58,7 @@ The Ghostty MIT License:
 
 NOTICE
 
-MegaNote embeds and statically links libghostty, a terminal emulation library
+meganote embeds and statically links libghostty, a terminal emulation library
 that is part of the Ghostty terminal emulator project. libghostty provides:
 
 - Terminal emulation (VT100/xterm compatible)

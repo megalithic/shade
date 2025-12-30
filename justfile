@@ -1,10 +1,10 @@
-# MegaNote - Floating terminal panel CLI using libghostty
-# https://github.com/megalithic/MegaNote
+# meganote - Floating terminal panel CLI using libghostty
+# https://github.com/megalithic/meganote
 
 set shell := ["bash", "-cu"]
 
 # Configuration
-name := "MegaNote"
+name := "meganote"
 version := "0.1.0"
 install_dir := env_var_or_default("PREFIX", env_var("HOME") + "/.local") + "/bin"
 ghostty_src := env_var_or_default("GHOSTTY_SRC", env_var("HOME") + "/src/ghostty")
@@ -198,7 +198,7 @@ setup-ghostty:
         echo ""
         echo "Location: $XCFW"
         echo ""
-        echo "MegaNote will auto-detect this location, or you can set:"
+        echo "meganote will auto-detect this location, or you can set:"
         echo "  export GHOSTTYKIT_PATH=\"$XCFW\""
     else
         echo ""
@@ -273,7 +273,7 @@ where: build
 where-release: release
     @echo ".build/release/{{name}}"
 
-# Kill any running MegaNote instances
+# Kill any running meganote instances
 kill:
     @pkill -f {{name}} || echo "No {{name}} process found"
 
@@ -286,7 +286,7 @@ xcode:
 # Nix
 # ─────────────────────────────────────────────────────────────
 
-# Build MegaNote with Nix
+# Build meganote with Nix
 nix-build:
     nix build
 
@@ -294,7 +294,7 @@ nix-build:
 nix-build-ghosttykit:
     nix build .#ghosttykit
 
-# Run MegaNote with Nix
+# Run meganote with Nix
 nix-run *ARGS:
     nix run . -- {{ARGS}}
 
