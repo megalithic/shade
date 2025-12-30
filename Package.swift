@@ -1,0 +1,119 @@
+// swift-tools-version:5.9
+import PackageDescription
+import Foundation
+
+// GhosttyKit path resolution:
+// 1. GHOSTTYKIT_PATH environment variable (set by Nix flake or manually)
+// 2. Standard locations checked in order:
+//    - ./vendor/GhosttyKit (vendored in repo)
+//    - ~/src/ghostty/macos/GhosttyKit.xcframework/macos-arm64
+//    - ~/src/ghostty-research/macos/GhosttyKit.xcframework/macos-arm64
+//    - ../ghostty/macos/GhosttyKit.xcframework/macos-arm64 (sibling dir)
+
+struct GhosttyKitPaths {
+    let headers: String
+    let modulemap: String
+    let library: String
+}
+
+func findGhosttyKit() -> GhosttyKitPaths {
+    // Check environment variable first (set by Nix flake)
+    if let envPath = ProcessInfo.processInfo.environment["GHOSTTYKIT_PATH"] {
+        // Nix build output structure: lib/libghostty-fat.a, include/ghostty.h
+        let nixLib = "\(envPath)/lib/libghostty-fat.a"
+        let nixHeaders = "\(envPath)/include"
+
+        if FileManager.default.fileExists(atPath: nixLib) {
+            return GhosttyKitPaths(
+                headers: nixHeaders,
+                modulemap: "\(nixHeaders)/module.modulemap",
+                library: nixLib
+            )
+        }
+
+        // XCFramework structure: Headers/, libghostty-fat.a
+        let xcfwLib = "\(envPath)/libghostty-fat.a"
+        let xcfwHeaders = "\(envPath)/Headers"
+
+        if FileManager.default.fileExists(atPath: xcfwLib) {
+            return GhosttyKitPaths(
+                headers: xcfwHeaders,
+                modulemap: "\(xcfwHeaders)/module.modulemap",
+                library: xcfwLib
+            )
+        }
+    }
+
+    let home = FileManager.default.homeDirectoryForCurrentUser.path
+
+    // Standard xcframework locations to check
+    let candidates = [
+        "./vendor/GhosttyKit",
+        "\(home)/src/ghostty/macos/GhosttyKit.xcframework/macos-arm64",
+        "\(home)/src/ghostty-research/macos/GhosttyKit.xcframework/macos-arm64",
+        "../ghostty/macos/GhosttyKit.xcframework/macos-arm64",
+    ]
+
+    for candidate in candidates {
+        let libPath = "\(candidate)/libghostty-fat.a"
+        if FileManager.default.fileExists(atPath: libPath) {
+            return GhosttyKitPaths(
+                headers: "\(candidate)/Headers",
+                modulemap: "\(candidate)/Headers/module.modulemap",
+                library: libPath
+            )
+        }
+    }
+
+    // Fallback - will fail at build time with clear error
+    return GhosttyKitPaths(
+        headers: "./vendor/GhosttyKit/Headers",
+        modulemap: "./vendor/GhosttyKit/Headers/module.modulemap",
+        library: "./vendor/GhosttyKit/libghostty-fat.a"
+    )
+}
+
+let ghostty = findGhosttyKit()
+
+let package = Package(
+    name: "MegaNote",
+    platforms: [
+        .macOS(.v13)
+    ],
+    products: [
+        .executable(name: "MegaNote", targets: ["MegaNote"])
+    ],
+    targets: [
+        .executableTarget(
+            name: "MegaNote",
+            path: "Sources",
+            swiftSettings: [
+                // Import path for GhosttyKit module
+                .unsafeFlags([
+                    "-I", ghostty.headers,
+                    "-Xcc", "-fmodule-map-file=\(ghostty.modulemap)",
+                ])
+            ],
+            linkerSettings: [
+                .unsafeFlags([
+                    // Link the static library
+                    ghostty.library,
+                ]),
+                // System frameworks required by libghostty
+                .linkedFramework("Metal"),
+                .linkedFramework("MetalKit"),
+                .linkedFramework("AppKit"),
+                .linkedFramework("CoreText"),
+                .linkedFramework("CoreGraphics"),
+                .linkedFramework("CoreVideo"),
+                .linkedFramework("IOSurface"),
+                .linkedFramework("Carbon"),
+                .linkedFramework("Foundation"),
+                .linkedFramework("QuartzCore"),
+                .linkedFramework("UniformTypeIdentifiers"),
+                // Link C++ standard library (required by Zig builds)
+                .linkedLibrary("c++"),
+            ]
+        )
+    ]
+)

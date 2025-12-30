@@ -1,0 +1,323 @@
+import AppKit
+import GhosttyKit
+
+/// Main application delegate that manages the ghostty app and terminal panel
+class MegaAppDelegate: NSObject, NSApplicationDelegate {
+
+    // MARK: - Singleton for C callback access
+
+    static var shared: MegaAppDelegate?
+
+    // MARK: - Properties
+
+    /// App configuration from CLI args
+    private let appConfig: AppConfig
+
+    /// The ghostty configuration
+    private var ghosttyConfig: ghostty_config_t?
+
+    /// The ghostty app instance
+    private var ghosttyApp: ghostty_app_t?
+
+    /// The floating panel containing the terminal
+    private var panel: MegaPanel?
+
+    /// The terminal view
+    private var terminalView: TerminalView?
+
+    /// Timer for the ghostty event loop
+    private var tickTimer: Timer?
+
+    /// Flag to prevent multiple termination attempts
+    private var isTerminating = false
+
+    // MARK: - Initialization
+
+    init(config: AppConfig) {
+        self.appConfig = config
+        super.init()
+    }
+
+    // MARK: - NSApplicationDelegate
+
+    func applicationDidFinishLaunching(_ notification: Notification) {
+        MegaAppDelegate.shared = self
+        Log.debug("Starting...")
+
+        // Make this a background app (no dock icon, no menu bar when hidden)
+        NSApp.setActivationPolicy(.accessory)
+
+        // Initialize ghostty
+        guard initializeGhostty() else {
+            Log.error("Failed to initialize ghostty")
+            NSApp.terminate(nil)
+            return
+        }
+
+        // Create the floating panel
+        createPanel()
+
+        // Start the event loop timer
+        startTickTimer()
+
+        // Listen for toggle notifications from Hammerspoon
+        setupNotificationListener()
+
+        Log.debug("Ready")
+    }
+
+    // MARK: - Notification Listener (for Hammerspoon integration)
+
+    private func setupNotificationListener() {
+        // Listen for distributed notifications from Hammerspoon or other apps
+        let center = DistributedNotificationCenter.default()
+
+        // Toggle notification
+        center.addObserver(
+            self,
+            selector: #selector(handleToggleNotification),
+            name: NSNotification.Name("com.meganote.toggle"),
+            object: nil
+        )
+
+        // Show notification
+        center.addObserver(
+            self,
+            selector: #selector(handleShowNotification),
+            name: NSNotification.Name("com.meganote.show"),
+            object: nil
+        )
+
+        // Hide notification
+        center.addObserver(
+            self,
+            selector: #selector(handleHideNotification),
+            name: NSNotification.Name("com.meganote.hide"),
+            object: nil
+        )
+
+        Log.debug("Listening for IPC notifications")
+    }
+
+    @objc private func handleToggleNotification(_ notification: Notification) {
+        Log.debug("IPC: toggle")
+        togglePanel()
+    }
+
+    @objc private func handleShowNotification(_ notification: Notification) {
+        Log.debug("IPC: show")
+        showPanel()
+    }
+
+    @objc private func handleHideNotification(_ notification: Notification) {
+        Log.debug("IPC: hide")
+        hidePanel()
+    }
+
+    func applicationWillTerminate(_ notification: Notification) {
+        Log.debug("Shutting down...")
+
+        // Stop the timer
+        tickTimer?.invalidate()
+        tickTimer = nil
+
+        // Clean up ghostty
+        if let app = ghosttyApp {
+            ghostty_app_free(app)
+            ghosttyApp = nil
+        }
+        if let cfg = ghosttyConfig {
+            ghostty_config_free(cfg)
+            ghosttyConfig = nil
+        }
+    }
+
+    func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool {
+        // Don't quit when panel is hidden - we're a toggle-able scratchpad
+        return false
+    }
+
+    // MARK: - Public API
+
+    /// Toggle the panel visibility
+    func togglePanel() {
+        panel?.toggle()
+    }
+
+    /// Show the panel
+    func showPanel() {
+        panel?.show()
+    }
+
+    /// Hide the panel
+    func hidePanel() {
+        panel?.hide()
+    }
+
+    /// Check if panel is visible
+    var isPanelVisible: Bool {
+        return panel?.isVisible ?? false
+    }
+
+    // MARK: - Ghostty Callbacks (Static for C interop)
+
+    /// Wakeup callback - called when ghostty needs the main thread
+    private static let wakeupCallback: @convention(c) (UnsafeMutableRawPointer?) -> Void = { _ in
+        // Tick timer handles updates, nothing needed here
+    }
+
+    /// Action callback - handle ghostty actions (keybinds, etc.)
+    private static let actionCallback: @convention(c) (ghostty_app_t?, ghostty_target_s, ghostty_action_s) -> Bool = { _, _, _ in
+        Log.debug("Ghostty action triggered")
+        return true
+    }
+
+    /// Read clipboard callback
+    private static let readClipboardCallback: @convention(c) (UnsafeMutableRawPointer?, ghostty_clipboard_e, UnsafeMutableRawPointer?) -> Void = { _, _, _ in
+        // Simplified - would need to implement clipboard reading
+    }
+
+    /// Confirm read clipboard callback
+    private static let confirmReadClipboardCallback: @convention(c) (UnsafeMutableRawPointer?, UnsafePointer<CChar>?, UnsafeMutableRawPointer?, ghostty_clipboard_request_e) -> Void = { _, _, _, _ in
+        // Auto-confirm clipboard reads for now
+    }
+
+    /// Write clipboard callback
+    private static let writeClipboardCallback: @convention(c) (UnsafeMutableRawPointer?, ghostty_clipboard_e, UnsafePointer<ghostty_clipboard_content_s>?, Int, Bool) -> Void = { _, _, content, _, _ in
+        guard let content = content else { return }
+        if let data = content.pointee.data {
+            let str = String(cString: data)
+            let pasteboard = NSPasteboard.general
+            pasteboard.clearContents()
+            pasteboard.setString(str, forType: .string)
+        }
+    }
+
+    /// Close surface callback - hide panel instead of terminating
+    private static let closeSurfaceCallback: @convention(c) (UnsafeMutableRawPointer?, Bool) -> Void = { _, _ in
+        DispatchQueue.main.async {
+            MegaAppDelegate.shared?.hidePanel()
+        }
+    }
+
+    // MARK: - Ghostty Initialization
+
+    private func initializeGhostty() -> Bool {
+        // Create configuration
+        guard let cfg = ghostty_config_new() else {
+            Log.error("ghostty_config_new failed")
+            return false
+        }
+
+        // Load default config files (user's ghostty config)
+        ghostty_config_load_default_files(cfg)
+
+        // Finalize config
+        ghostty_config_finalize(cfg)
+        self.ghosttyConfig = cfg
+
+        // Create runtime configuration with callbacks
+        var runtimeConfig = ghostty_runtime_config_s(
+            userdata: Unmanaged.passUnretained(self).toOpaque(),
+            supports_selection_clipboard: true,
+            wakeup_cb: MegaAppDelegate.wakeupCallback,
+            action_cb: MegaAppDelegate.actionCallback,
+            read_clipboard_cb: MegaAppDelegate.readClipboardCallback,
+            confirm_read_clipboard_cb: MegaAppDelegate.confirmReadClipboardCallback,
+            write_clipboard_cb: MegaAppDelegate.writeClipboardCallback,
+            close_surface_cb: MegaAppDelegate.closeSurfaceCallback
+        )
+
+        // Create the ghostty app
+        guard let app = ghostty_app_new(&runtimeConfig, cfg) else {
+            Log.error("ghostty_app_new failed")
+            return false
+        }
+        self.ghosttyApp = app
+
+        Log.debug("Ghostty app created")
+        return true
+    }
+
+    // MARK: - Panel Creation
+
+    private func createPanel() {
+        guard let app = ghosttyApp else { return }
+
+        // Calculate panel size based on config (percentage or absolute pixels)
+        let panelSize = calculatePanelSize()
+        let panelRect = NSRect(x: 0, y: 0, width: panelSize.width, height: panelSize.height)
+
+        Log.debug("Panel size: \(Int(panelSize.width))x\(Int(panelSize.height))")
+
+        // Create floating panel
+        let panel = MegaPanel(contentRect: panelRect)
+
+        // Create terminal view with command/workingDirectory from config
+        let terminalView = TerminalView(
+            frame: panelRect,
+            ghosttyApp: app,
+            command: appConfig.command,
+            workingDirectory: appConfig.workingDirectory
+        )
+        panel.contentView = terminalView
+        self.terminalView = terminalView
+        self.panel = panel
+
+        // Show panel unless startHidden is set
+        if !appConfig.startHidden {
+            panel.show()
+        } else {
+            Log.debug("Starting hidden")
+        }
+    }
+
+    /// Calculate panel size from config values
+    /// Values <= 1.0 are treated as percentages of screen size
+    /// Values > 1.0 are treated as absolute pixel values
+    private func calculatePanelSize() -> NSSize {
+        guard let screen = NSScreen.main ?? NSScreen.screens.first else {
+            return NSSize(width: 800, height: 500)
+        }
+
+        let screenFrame = screen.visibleFrame
+
+        let width: CGFloat
+        if appConfig.width <= 1.0 {
+            width = screenFrame.width * CGFloat(appConfig.width)
+        } else {
+            width = CGFloat(appConfig.width)
+        }
+
+        let height: CGFloat
+        if appConfig.height <= 1.0 {
+            height = screenFrame.height * CGFloat(appConfig.height)
+        } else {
+            height = CGFloat(appConfig.height)
+        }
+
+        return NSSize(width: width, height: height)
+    }
+
+    // MARK: - Event Loop
+
+    private func startTickTimer() {
+        // Run ghostty tick at 60fps
+        tickTimer = Timer.scheduledTimer(withTimeInterval: 1.0/60.0, repeats: true) { [weak self] _ in
+            guard let self = self, let app = self.ghosttyApp else { return }
+            ghostty_app_tick(app)
+
+            // Check if child process has exited (only if not already terminating)
+            if !self.isTerminating,
+               let terminalView = self.terminalView,
+               terminalView.hasProcessExited() {
+                self.isTerminating = true
+                Log.debug("Child process exited, terminating")
+                self.hidePanel()
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
+                    NSApp.terminate(nil)
+                }
+            }
+        }
+    }
+}
