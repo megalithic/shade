@@ -142,6 +142,22 @@ class ShadeAppDelegate: NSObject, NSApplicationDelegate {
             object: nil
         )
 
+        // Note capture notification
+        center.addObserver(
+            self,
+            selector: #selector(handleNoteCaptureNotification),
+            name: NSNotification.Name("io.shade.note.capture"),
+            object: nil
+        )
+
+        // Daily note notification
+        center.addObserver(
+            self,
+            selector: #selector(handleDailyNoteNotification),
+            name: NSNotification.Name("io.shade.note.daily"),
+            object: nil
+        )
+
         Log.debug("Listening for IPC notifications")
     }
 
@@ -168,6 +184,42 @@ class ShadeAppDelegate: NSObject, NSApplicationDelegate {
         Log.debug("IPC: quit")
         isTerminating = true
         NSApp.terminate(nil)
+    }
+
+    @objc private func handleNoteCaptureNotification(_ notification: Notification) {
+        Log.debug("IPC: note.capture")
+
+        // Read context from context.json (written by Hammerspoon)
+        let context = StateDirectory.readContext()
+        if let ctx = context {
+            Log.debug("Capture context: \(ctx.appType ?? "unknown") from \(ctx.appName ?? "unknown")")
+        }
+
+        // Delete context file after reading (one-shot)
+        StateDirectory.deleteContextFile()
+
+        // If already showing and has active surface, just focus
+        // (don't create a new capture when already in capture mode)
+        if isPanelVisible && !isBackgrounded {
+            Log.debug("Already visible with active surface, focusing")
+            panel?.makeKeyAndOrderFront(nil)
+            NSApp.activate(ignoringOtherApps: true)
+            return
+        }
+
+        // Show panel with surface (will recreate if backgrounded)
+        // TODO: When nvim RPC is implemented (shade-141.8), send command
+        // to open a new capture file with the context
+        showPanelWithSurface()
+    }
+
+    @objc private func handleDailyNoteNotification(_ notification: Notification) {
+        Log.debug("IPC: note.daily")
+
+        // Show panel with surface (will recreate if backgrounded)
+        // TODO: When nvim RPC is implemented (shade-141.8), send command
+        // to open today's daily note file
+        showPanelWithSurface()
     }
 
     func applicationWillTerminate(_ notification: Notification) {
