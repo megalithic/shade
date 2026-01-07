@@ -183,21 +183,34 @@ class TerminalView: NSView {
         var keyEvent = ghostty_input_key_s()
         keyEvent.action = event.isARepeat ? GHOSTTY_ACTION_REPEAT : GHOSTTY_ACTION_PRESS
         keyEvent.mods = convertModifiers(event.modifierFlags)
-        keyEvent.consumed_mods = GHOSTTY_MODS_NONE
+
+        // Consumed mods are the modifiers that contributed to producing the text.
+        // Control and command never contribute to text translation, so we exclude them.
+        // This allows shift+; to produce ":" while still reporting shift as a modifier.
+        keyEvent.consumed_mods = convertModifiers(
+            event.modifierFlags.subtracting([.control, .command])
+        )
+
         keyEvent.keycode = UInt32(event.keyCode)
+
+        // Calculate unshifted codepoint - the character with no modifiers applied.
+        // This is needed for proper key encoding (e.g., shift+; should know the base key is ";")
+        keyEvent.unshifted_codepoint = 0
+        if let unshiftedChars = event.characters(byApplyingModifiers: []),
+           let codepoint = unshiftedChars.unicodeScalars.first {
+            keyEvent.unshifted_codepoint = codepoint.value
+        }
 
         // Set text if available
         if let chars = event.characters {
             chars.withCString { cstr in
                 keyEvent.text = cstr
                 keyEvent.composing = false
-                keyEvent.unshifted_codepoint = 0  // Would need to calculate this properly
                 _ = ghostty_surface_key(surface, keyEvent)
             }
         } else {
             keyEvent.text = nil
             keyEvent.composing = false
-            keyEvent.unshifted_codepoint = 0
             _ = ghostty_surface_key(surface, keyEvent)
         }
     }
@@ -211,11 +224,19 @@ class TerminalView: NSView {
         var keyEvent = ghostty_input_key_s()
         keyEvent.action = GHOSTTY_ACTION_RELEASE
         keyEvent.mods = convertModifiers(event.modifierFlags)
-        keyEvent.consumed_mods = GHOSTTY_MODS_NONE
+        keyEvent.consumed_mods = convertModifiers(
+            event.modifierFlags.subtracting([.control, .command])
+        )
         keyEvent.keycode = UInt32(event.keyCode)
         keyEvent.text = nil
         keyEvent.composing = false
+
+        // Calculate unshifted codepoint for key release as well
         keyEvent.unshifted_codepoint = 0
+        if let unshiftedChars = event.characters(byApplyingModifiers: []),
+           let codepoint = unshiftedChars.unicodeScalars.first {
+            keyEvent.unshifted_codepoint = codepoint.value
+        }
 
         _ = ghostty_surface_key(surface, keyEvent)
     }
