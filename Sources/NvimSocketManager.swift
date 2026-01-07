@@ -4,10 +4,7 @@ import Foundation
 /// Native Unix socket connection manager for nvim msgpack-rpc communication.
 /// This is Option B: persistent socket connection (vs Option A: shell out per command in NvimRPC.swift)
 ///
-/// Protocol: msgpack-rpc over Unix domain socket
-/// - Request:      [0, msgid, method, params]
-/// - Response:     [1, msgid, error, result]
-/// - Notification: [2, method, params]
+/// Uses `MsgpackRpc` for protocol encoding/decoding.
 actor NvimSocketManager {
     
     // MARK: - Types
@@ -20,33 +17,6 @@ actor NvimSocketManager {
         case error(String)
     }
     
-    /// msgpack-rpc message types
-    enum MessageType: UInt64 {
-        case request = 0
-        case response = 1
-        case notification = 2
-    }
-    
-    /// Parsed incoming message
-    enum Message: Sendable {
-        case response(msgid: UInt32, error: MessagePackValue, result: MessagePackValue)
-        case notification(method: String, params: [MessagePackValue])
-        case request(msgid: UInt32, method: String, params: [MessagePackValue])
-    }
-    
-    /// Response from nvim
-    struct Response: Sendable {
-        let msgid: UInt32
-        let error: MessagePackValue
-        let result: MessagePackValue
-        
-        var isSuccess: Bool { error.isNil }
-        
-        static func empty(_ msgid: UInt32) -> Response {
-            Response(msgid: msgid, error: .nil, result: .nil)
-        }
-    }
-    
     /// Errors from socket manager
     enum SocketError: Error, LocalizedError {
         case notConnected
@@ -54,7 +24,6 @@ actor NvimSocketManager {
         case socketCreationFailed
         case writeFailed(String)
         case readFailed(String)
-        case invalidMessage(String)
         case timeout
         
         var errorDescription: String? {
@@ -69,13 +38,16 @@ actor NvimSocketManager {
                 return "Write failed: \(msg)"
             case .readFailed(let msg):
                 return "Read failed: \(msg)"
-            case .invalidMessage(let msg):
-                return "Invalid message: \(msg)"
             case .timeout:
                 return "Request timed out"
             }
         }
     }
+    
+    // MARK: - Type Aliases (from MsgpackRpc for convenience)
+    
+    typealias Response = MsgpackRpc.Response
+    typealias Message = MsgpackRpc.Message
     
     // MARK: - Properties
     
@@ -103,9 +75,9 @@ actor NvimSocketManager {
     /// Pending request continuations, keyed by msgid
     private var pendingRequests: [UInt32: CheckedContinuation<Response, Error>] = [:]
     
-    /// Stream for incoming notifications
-    let notificationStream: AsyncStream<Message>
-    private let notificationContinuation: AsyncStream<Message>.Continuation
+    /// Stream for incoming messages (notifications and requests from nvim)
+    let messageStream: AsyncStream<Message>
+    private let messageContinuation: AsyncStream<Message>.Continuation
     
     /// Callback for state changes
     var onStateChange: ((ConnectionState) -> Void)?
@@ -114,7 +86,7 @@ actor NvimSocketManager {
     
     init(socketPath: String? = nil) {
         self.socketPath = socketPath ?? StateDirectory.nvimSocketPath
-        (self.notificationStream, self.notificationContinuation) = AsyncStream.makeStream()
+        (self.messageStream, self.messageContinuation) = AsyncStream.makeStream()
     }
     
     deinit {
@@ -157,7 +129,6 @@ actor NvimSocketManager {
         addr.sun_family = sa_family_t(AF_UNIX)
         
         // Copy path into sun_path (null-terminated)
-        // Note: sun_path is a fixed-size tuple of CChars
         let sunPathSize = MemoryLayout.size(ofValue: addr.sun_path)
         let pathLen = min(socketPath.utf8.count, sunPathSize - 1)
         
@@ -220,8 +191,8 @@ actor NvimSocketManager {
         }
         pendingRequests.removeAll()
         
-        // Finish notification stream
-        notificationContinuation.finish()
+        // Finish message stream
+        messageContinuation.finish()
         
         setState(.disconnected)
         Log.info("NvimSocketManager: Disconnected")
@@ -252,20 +223,14 @@ actor NvimSocketManager {
         let msgid = nextMsgid
         nextMsgid += 1
         
-        // Pack request: [0, msgid, method, params]
-        let message: MessagePackValue = .array([
-            .uint(MessageType.request.rawValue),
-            .uint(UInt64(msgid)),
-            .string(method),
-            .array(params)
-        ])
-        
-        let packed = pack(message)
+        // Create and encode request using MsgpackRpc
+        let request = MsgpackRpc.Request(msgid: msgid, method: method, params: params)
+        let data = request.encode()
         
         Log.debug("NvimSocketManager: Request \(msgid) -> \(method)")
         
         // Write to socket
-        try writeData(packed, to: fd)
+        try writeData(data, to: fd)
         
         // Wait for response with timeout
         return try await withThrowingTaskGroup(of: Response.self) { group in
@@ -295,18 +260,31 @@ actor NvimSocketManager {
             throw SocketError.notConnected
         }
         
-        // Pack notification: [2, method, params]
-        let message: MessagePackValue = .array([
-            .uint(MessageType.notification.rawValue),
-            .string(method),
-            .array(params)
-        ])
-        
-        let packed = pack(message)
+        // Create and encode notification using MsgpackRpc
+        let notification = MsgpackRpc.Notification(method: method, params: params)
+        let data = notification.encode()
         
         Log.debug("NvimSocketManager: Notify -> \(method)")
         
-        try writeData(packed, to: fd)
+        try writeData(data, to: fd)
+    }
+    
+    /// Send a response to a request from nvim
+    /// - Parameters:
+    ///   - msgid: The msgid from the request
+    ///   - error: Error value (nil if success)
+    ///   - result: Result value
+    func respond(msgid: UInt32, error: MessagePackValue = .nil, result: MessagePackValue = .nil) throws {
+        guard isConnected, let fd = socketFD else {
+            throw SocketError.notConnected
+        }
+        
+        let response = MsgpackRpc.Response(msgid: msgid, error: error, result: result)
+        let data = response.encode()
+        
+        Log.debug("NvimSocketManager: Response \(msgid) -> \(response.isSuccess ? "success" : "error")")
+        
+        try writeData(data, to: fd)
     }
     
     // MARK: - Private Helpers
@@ -391,86 +369,38 @@ actor NvimSocketManager {
     private func handleIncomingData(_ data: Data) {
         readBuffer.append(data)
         
-        // Try to unpack complete messages
-        while !readBuffer.isEmpty {
-            do {
-                let (value, remainder) = try unpack(readBuffer)
-                
-                // Update buffer with remainder (unpack(Data) returns Data directly)
-                readBuffer = remainder
-                
-                processMessage(value)
-            } catch MessagePackError.insufficientData {
-                // Need more data, wait for next read
-                break
-            } catch {
-                Log.error("NvimSocketManager: Unpack error: \(error)")
-                readBuffer.removeAll()
-                break
-            }
+        // Use MsgpackRpc to decode all complete messages
+        let result = MsgpackRpc.decodeAll(from: readBuffer)
+        readBuffer = result.remainder
+        
+        // Log any decode errors
+        for error in result.errors {
+            Log.error("NvimSocketManager: Decode error: \(error)")
+        }
+        
+        // Process each message
+        for message in result.messages {
+            processMessage(message)
         }
     }
     
-    /// Process a complete msgpack-rpc message
-    private func processMessage(_ value: MessagePackValue) {
-        guard let array = value.arrayValue, !array.isEmpty else {
-            Log.error("NvimSocketManager: Invalid message format")
-            return
-        }
-        
-        guard let rawType = array[0].uint64Value,
-              let type = MessageType(rawValue: rawType) else {
-            Log.error("NvimSocketManager: Unknown message type")
-            return
-        }
-        
-        switch type {
-        case .response:
-            guard array.count == 4,
-                  let msgid = array[1].uint64Value else {
-                Log.error("NvimSocketManager: Invalid response format")
-                return
-            }
+    /// Process a decoded msgpack-rpc message
+    private func processMessage(_ message: Message) {
+        switch message {
+        case .response(let response):
+            Log.debug("NvimSocketManager: Response \(response.msgid) <- \(response.isSuccess ? "success" : "error")")
             
-            let response = Response(
-                msgid: UInt32(msgid),
-                error: array[2],
-                result: array[3]
-            )
-            
-            Log.debug("NvimSocketManager: Response \(msgid) <- \(response.isSuccess ? "success" : "error")")
-            
-            if let continuation = pendingRequests.removeValue(forKey: UInt32(msgid)) {
+            if let continuation = pendingRequests.removeValue(forKey: response.msgid) {
                 continuation.resume(returning: response)
             }
             
-        case .notification:
-            guard array.count == 3,
-                  let method = array[1].stringValue,
-                  let params = array[2].arrayValue else {
-                Log.error("NvimSocketManager: Invalid notification format")
-                return
-            }
+        case .notification(let notification):
+            Log.debug("NvimSocketManager: Notification <- \(notification.method)")
+            messageContinuation.yield(.notification(notification))
             
-            Log.debug("NvimSocketManager: Notification <- \(method)")
-            notificationContinuation.yield(.notification(method: method, params: params))
-            
-        case .request:
-            // Nvim requesting something from us (rare, but possible with UI attach)
-            guard array.count == 4,
-                  let msgid = array[1].uint64Value,
-                  let method = array[2].stringValue,
-                  let params = array[3].arrayValue else {
-                Log.error("NvimSocketManager: Invalid request format")
-                return
-            }
-            
-            Log.debug("NvimSocketManager: Request <- \(method)")
-            notificationContinuation.yield(.request(
-                msgid: UInt32(msgid),
-                method: method,
-                params: params
-            ))
+        case .request(let request):
+            Log.debug("NvimSocketManager: Request <- \(request.method)")
+            messageContinuation.yield(.request(request))
         }
     }
     
