@@ -83,9 +83,15 @@ let package = Package(
     products: [
         .executable(name: "shade", targets: ["shade"])
     ],
+    dependencies: [
+        .package(url: "https://github.com/a2/MessagePack.swift.git", from: "4.0.0"),
+    ],
     targets: [
         .executableTarget(
             name: "shade",
+            dependencies: [
+                .product(name: "MessagePack", package: "MessagePack.swift"),
+            ],
             path: "Sources",
             swiftSettings: [
                 // Import path for GhosttyKit module
