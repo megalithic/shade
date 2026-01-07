@@ -68,6 +68,9 @@ class ShadeAppDelegate: NSObject, NSApplicationDelegate {
         // Setup minimal menu bar for Cmd+Q support
         setupMenuBar()
 
+        // Register emergency escape hotkey (Cmd+Escape)
+        setupEmergencyHotkey()
+
         // Start the event loop timer
         startTickTimer()
 
@@ -102,6 +105,21 @@ class ShadeAppDelegate: NSObject, NSApplicationDelegate {
 
         NSApp.mainMenu = mainMenu
         Log.debug("Menu bar configured (Cmd+Q enabled)")
+    }
+
+    // MARK: - Emergency Hotkey (Cmd+Escape)
+
+    private func setupEmergencyHotkey() {
+        GlobalHotkey.shared.onEscapePressed = { [weak self] in
+            Log.debug("Emergency escape: hiding panel")
+            self?.hidePanel()
+        }
+
+        if GlobalHotkey.shared.register() {
+            Log.debug("Emergency hotkey registered (Cmd+Escape to hide)")
+        } else {
+            Log.warn("Emergency hotkey registration failed - Accessibility permissions may be needed")
+        }
     }
 
     // MARK: - Notification Listener (for Hammerspoon integration)
@@ -256,6 +274,9 @@ class ShadeAppDelegate: NSObject, NSApplicationDelegate {
 
         // Clean up state files
         StateDirectory.removePIDFile()
+
+        // Unregister hotkey
+        GlobalHotkey.shared.unregister()
     }
 
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool {
