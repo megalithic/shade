@@ -1,8 +1,8 @@
 import AppKit
 
-/// A floating panel for the meganote terminal
+/// A floating panel for the shade terminal
 /// Behaves like a scratchpad - floats above other windows, doesn't steal focus
-class MegaPanel: NSPanel {
+class ShadePanel: NSPanel {
 
     // MARK: - Initialization
 
@@ -28,7 +28,7 @@ class MegaPanel: NSPanel {
 
     private func configurePanel() {
         // Panel behavior
-        title = "meganote"
+        title = "shade"
         isFloatingPanel = true                    // Float above normal windows
         becomesKeyOnlyIfNeeded = true            // Only become key if needed
         hidesOnDeactivate = false                // Stay visible when app loses focus

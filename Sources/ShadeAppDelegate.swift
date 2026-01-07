@@ -2,11 +2,11 @@ import AppKit
 import GhosttyKit
 
 /// Main application delegate that manages the ghostty app and terminal panel
-class MegaAppDelegate: NSObject, NSApplicationDelegate {
+class ShadeAppDelegate: NSObject, NSApplicationDelegate {
 
     // MARK: - Singleton for C callback access
 
-    static var shared: MegaAppDelegate?
+    static var shared: ShadeAppDelegate?
 
     // MARK: - Properties
 
@@ -20,7 +20,7 @@ class MegaAppDelegate: NSObject, NSApplicationDelegate {
     private var ghosttyApp: ghostty_app_t?
 
     /// The floating panel containing the terminal
-    private var panel: MegaPanel?
+    private var panel: ShadePanel?
 
     /// The terminal view
     private var terminalView: TerminalView?
@@ -41,7 +41,7 @@ class MegaAppDelegate: NSObject, NSApplicationDelegate {
     // MARK: - NSApplicationDelegate
 
     func applicationDidFinishLaunching(_ notification: Notification) {
-        MegaAppDelegate.shared = self
+        ShadeAppDelegate.shared = self
         Log.debug("Starting...")
 
         // Make this a background app (no dock icon, no menu bar when hidden)
@@ -76,7 +76,7 @@ class MegaAppDelegate: NSObject, NSApplicationDelegate {
         center.addObserver(
             self,
             selector: #selector(handleToggleNotification),
-            name: NSNotification.Name("com.meganote.toggle"),
+            name: NSNotification.Name("io.shade.toggle"),
             object: nil
         )
 
@@ -84,7 +84,7 @@ class MegaAppDelegate: NSObject, NSApplicationDelegate {
         center.addObserver(
             self,
             selector: #selector(handleShowNotification),
-            name: NSNotification.Name("com.meganote.show"),
+            name: NSNotification.Name("io.shade.show"),
             object: nil
         )
 
@@ -92,7 +92,7 @@ class MegaAppDelegate: NSObject, NSApplicationDelegate {
         center.addObserver(
             self,
             selector: #selector(handleHideNotification),
-            name: NSNotification.Name("com.meganote.hide"),
+            name: NSNotification.Name("io.shade.hide"),
             object: nil
         )
 
@@ -196,7 +196,7 @@ class MegaAppDelegate: NSObject, NSApplicationDelegate {
     /// Close surface callback - hide panel instead of terminating
     private static let closeSurfaceCallback: @convention(c) (UnsafeMutableRawPointer?, Bool) -> Void = { _, _ in
         DispatchQueue.main.async {
-            MegaAppDelegate.shared?.hidePanel()
+            ShadeAppDelegate.shared?.hidePanel()
         }
     }
 
@@ -220,12 +220,12 @@ class MegaAppDelegate: NSObject, NSApplicationDelegate {
         var runtimeConfig = ghostty_runtime_config_s(
             userdata: Unmanaged.passUnretained(self).toOpaque(),
             supports_selection_clipboard: true,
-            wakeup_cb: MegaAppDelegate.wakeupCallback,
-            action_cb: MegaAppDelegate.actionCallback,
-            read_clipboard_cb: MegaAppDelegate.readClipboardCallback,
-            confirm_read_clipboard_cb: MegaAppDelegate.confirmReadClipboardCallback,
-            write_clipboard_cb: MegaAppDelegate.writeClipboardCallback,
-            close_surface_cb: MegaAppDelegate.closeSurfaceCallback
+            wakeup_cb: ShadeAppDelegate.wakeupCallback,
+            action_cb: ShadeAppDelegate.actionCallback,
+            read_clipboard_cb: ShadeAppDelegate.readClipboardCallback,
+            confirm_read_clipboard_cb: ShadeAppDelegate.confirmReadClipboardCallback,
+            write_clipboard_cb: ShadeAppDelegate.writeClipboardCallback,
+            close_surface_cb: ShadeAppDelegate.closeSurfaceCallback
         )
 
         // Create the ghostty app
@@ -251,7 +251,7 @@ class MegaAppDelegate: NSObject, NSApplicationDelegate {
         Log.debug("Panel size: \(Int(panelSize.width))x\(Int(panelSize.height))")
 
         // Create floating panel
-        let panel = MegaPanel(contentRect: panelRect)
+        let panel = ShadePanel(contentRect: panelRect)
 
         // Create terminal view with command/workingDirectory from config
         let terminalView = TerminalView(

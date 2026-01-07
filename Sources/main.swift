@@ -11,31 +11,31 @@ enum Log {
     /// Log debug message (only when verbose is enabled)
     static func debug(_ message: @autoclosure () -> String) {
         if verbose {
-            print("[meganote] \(message())")
+            print("[shade] \(message())")
         }
     }
 
     /// Log info message (only when verbose is enabled)
     static func info(_ message: @autoclosure () -> String) {
         if verbose {
-            print("[meganote] \(message())")
+            print("[shade] \(message())")
         }
     }
 
     /// Log error message (always visible)
     static func error(_ message: @autoclosure () -> String) {
-        fputs("[meganote] ERROR: \(message())\n", stderr)
+        fputs("[shade] ERROR: \(message())\n", stderr)
     }
 
     /// Log warning message (always visible)
     static func warn(_ message: @autoclosure () -> String) {
-        fputs("[meganote] WARN: \(message())\n", stderr)
+        fputs("[shade] WARN: \(message())\n", stderr)
     }
 }
 
 // MARK: - Configuration
 
-/// Configuration for meganote, parsed from command-line args
+/// Configuration for shade, parsed from command-line args
 struct AppConfig {
     /// Width as percentage of screen (0.0-1.0) or absolute pixels if > 1
     var width: Double = 0.45
@@ -95,9 +95,10 @@ struct AppConfig {
 
     static func printUsage() {
         print("""
-        meganote - Floating terminal panel powered by libghostty
+        shade - Floating terminal panel powered by libghostty
+        A lighter shade of ghost.
 
-        Usage: meganote [options]
+        Usage: shade [options]
 
         Options:
           -w, --width <value>      Width (0.0-1.0 for %, or pixels if > 1)
@@ -109,14 +110,17 @@ struct AppConfig {
           --help                   Show this help
 
         Toggle via distributed notification:
-          com.meganote.toggle  Toggle visibility
-          com.meganote.show    Show panel
-          com.meganote.hide    Hide panel
+          io.shade.toggle          Toggle visibility
+          io.shade.show            Show panel
+          io.shade.hide            Hide panel
+          io.shade.quit            Terminate shade
+          io.shade.note.capture    Open quick capture
+          io.shade.note.daily      Open daily note
 
         Examples:
-          meganote --width 0.5 --height 0.4 --command "nvim ~/notes/capture.md"
-          meganote -w 800 -h 600 --hidden
-          meganote --verbose  # Debug output
+          shade --width 0.5 --height 0.4 --command "nvim ~/notes/capture.md"
+          shade -w 800 -h 600 --hidden
+          shade --verbose  # Debug output
         """)
     }
 }
@@ -137,6 +141,6 @@ if ghostty_init(UInt(CommandLine.argc), CommandLine.unsafeArgv) != GHOSTTY_SUCCE
 Log.debug("Ghostty initialized")
 
 let app = NSApplication.shared
-let delegate = MegaAppDelegate(config: appConfig)
+let delegate = ShadeAppDelegate(config: appConfig)
 app.delegate = delegate
 app.run()

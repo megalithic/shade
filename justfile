@@ -1,11 +1,12 @@
-# meganote - Floating terminal panel CLI using libghostty
-# https://github.com/megalithic/meganote
+# shade - Floating terminal panel CLI using libghostty
+# A lighter shade of ghost.
+# https://github.com/megalithic/shade
 
 set shell := ["bash", "-cu"]
 
 # Configuration
-name := "meganote"
-version := "0.1.0"
+name := "shade"
+version := "0.2.0"
 install_dir := env_var_or_default("PREFIX", env_var("HOME") + "/.local") + "/bin"
 ghostty_src := env_var_or_default("GHOSTTY_SRC", env_var("HOME") + "/src/ghostty")
 
@@ -198,7 +199,7 @@ setup-ghostty:
         echo ""
         echo "Location: $XCFW"
         echo ""
-        echo "meganote will auto-detect this location, or you can set:"
+        echo "shade will auto-detect this location, or you can set:"
         echo "  export GHOSTTYKIT_PATH=\"$XCFW\""
     else
         echo ""
@@ -273,7 +274,7 @@ where: build
 where-release: release
     @echo ".build/release/{{name}}"
 
-# Kill any running meganote instances
+# Kill any running shade instances
 kill:
     @pkill -f {{name}} || echo "No {{name}} process found"
 
@@ -286,7 +287,7 @@ xcode:
 # Nix
 # ─────────────────────────────────────────────────────────────
 
-# Build meganote with Nix
+# Build shade with Nix
 nix-build:
     nix build
 
@@ -294,7 +295,7 @@ nix-build:
 nix-build-ghosttykit:
     nix build .#ghosttykit
 
-# Run meganote with Nix
+# Run shade with Nix
 nix-run *ARGS:
     nix run . -- {{ARGS}}
 

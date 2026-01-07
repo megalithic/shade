@@ -1,16 +1,19 @@
-# meganote
+# shade
 
-A **standalone CLI executable** for macOS that provides a floating terminal panel using [libghostty](https://github.com/ghostty-org/ghostty). Designed for quick note capture workflows with nvim.
+A **standalone CLI executable** for macOS that provides a floating terminal panel using [libghostty](https://github.com/ghostty-org/ghostty). A lighter shade of ghost.
+
+Designed for quick note capture workflows with nvim.
 
 ## What It Is
 
-meganote is a **command-line tool**, not a traditional `.app` bundle or framework:
+shade is a **command-line tool**, not a traditional `.app` bundle or framework:
 
 ```
-$ ./meganote --help
-meganote - Floating terminal panel powered by libghostty
+$ ./shade --help
+shade - Floating terminal panel powered by libghostty
+A lighter shade of ghost.
 
-Usage: meganote [options]
+Usage: shade [options]
 
 Options:
   -w, --width <value>      Width (0.0-1.0 for %, or pixels if > 1)
@@ -22,60 +25,75 @@ Options:
   --help                   Show this help
 ```
 
-When run, it creates a floating NSPanel window hosting a ghostty terminal surface. When the terminal process exits, meganote automatically terminates.
+When run, it creates a floating NSPanel window hosting a ghostty terminal surface. When the terminal process exits, shade hides (backgrounds) rather than terminating.
 
 ## Architecture
 
 ```
-┌─────────────────────────────────────────────────────────────┐
-│                 Hammerspoon (Lua)                           │
-│  - Launches meganote via hs.task.new()                      │
-│  - Sends distributed notifications for show/hide/toggle     │
-└─────────────────────────────────────────────────────────────┘
-                              │
++-------------------------------------------------------------+
+|                 Hammerspoon (Lua)                           |
+|  - Launches shade via hs.task.new()                         |
+|  - Sends distributed notifications for show/hide/toggle     |
+|  - Writes context to ~/.local/state/shade/context.json      |
++-------------------------------------------------------------+
+                              |
                      IPC (distributed notifications)
-                              │
-                              ▼
-┌─────────────────────────────────────────────────────────────┐
-│                 meganote (Swift CLI)                        │
-├─────────────────────────────────────────────────────────────┤
-│  main.swift          Entry point, CLI arg parsing           │
-│  MegaAppDelegate     App lifecycle, IPC listener, tick loop │
-│  MegaPanel           NSPanel: floating, non-activating      │
-│  TerminalView        NSView hosting ghostty surface         │
-└─────────────────────────────────────────────────────────────┘
-                              │
-                              ▼
-┌─────────────────────────────────────────────────────────────┐
-│                 libghostty (Zig → C)                        │
-│  Terminal emulation, GPU rendering (Metal), PTY management  │
-└─────────────────────────────────────────────────────────────┘
-                              │
-                              ▼
-┌─────────────────────────────────────────────────────────────┐
-│                 Child Process (e.g., nvim)                  │
-└─────────────────────────────────────────────────────────────┘
+                              |
+                              v
++-------------------------------------------------------------+
+|                 shade (Swift CLI)                           |
++-------------------------------------------------------------+
+|  main.swift            Entry point, CLI arg parsing         |
+|  ShadeAppDelegate      App lifecycle, IPC listener, tick    |
+|  ShadePanel            NSPanel: floating, non-activating    |
+|  TerminalView          NSView hosting ghostty surface       |
++-------------------------------------------------------------+
+                              |
+                              v
++-------------------------------------------------------------+
+|                 libghostty (Zig -> C)                       |
+|  Terminal emulation, GPU rendering (Metal), PTY management  |
++-------------------------------------------------------------+
+                              |
+                              v
++-------------------------------------------------------------+
+|                 Child Process (e.g., nvim)                  |
++-------------------------------------------------------------+
 ```
 
 ### IPC Protocol
 
-meganote listens for macOS distributed notifications:
+shade listens for macOS distributed notifications:
 
 | Notification Name       | Action                    |
-|------------------------|---------------------------|
-| `com.meganote.toggle`  | Toggle panel visibility   |
-| `com.meganote.show`    | Show panel                |
-| `com.meganote.hide`    | Hide panel                |
+|-------------------------|---------------------------|
+| `io.shade.toggle`       | Toggle panel visibility   |
+| `io.shade.show`         | Show panel                |
+| `io.shade.hide`         | Hide panel                |
+| `io.shade.quit`         | Terminate shade           |
+| `io.shade.note.capture` | Open quick capture note   |
+| `io.shade.note.daily`   | Open daily note           |
 
 Send from Hammerspoon:
 ```lua
-hs.distributednotifications.post("com.meganote.toggle", nil, nil)
+hs.distributednotifications.post("io.shade.toggle", nil, nil)
 ```
 
 Or from command line:
 ```bash
 # Using Swift
-swift -e 'import Foundation; DistributedNotificationCenter.default().post(name: NSNotification.Name("com.meganote.toggle"), object: nil)'
+swift -e 'import Foundation; DistributedNotificationCenter.default().post(name: NSNotification.Name("io.shade.toggle"), object: nil)'
+```
+
+### XDG Directories
+
+shade uses XDG-compliant paths for state:
+
+```
+~/.local/state/shade/
++-- context.json    # Capture context (written by Hammerspoon)
++-- nvim.sock       # Nvim RPC socket
++-- shade.pid       # Process management
 ```
 
 ## Installation
@@ -85,9 +103,9 @@ swift -e 'import Foundation; DistributedNotificationCenter.default().post(name: 
 The flake includes [Ghostty](https://github.com/ghostty-org/ghostty) as an input and builds GhosttyKit automatically:
 
 ```bash
-# Clone meganote
-git clone https://github.com/megalithic/meganote
-cd meganote
+# Clone shade
+git clone https://github.com/megalithic/shade
+cd shade
 
 # Enter dev shell (builds GhosttyKit from source - may take a few minutes first time)
 nix develop
@@ -116,10 +134,10 @@ git clone https://github.com/ghostty-org/ghostty
 cd ghostty
 zig build -Doptimize=ReleaseFast
 
-# Clone and build meganote
+# Clone and build shade
 cd ~/code
-git clone https://github.com/megalithic/meganote
-cd meganote
+git clone https://github.com/megalithic/shade
+cd shade
 
 # Verify GhosttyKit is found
 just check-deps
@@ -129,7 +147,7 @@ just release
 just install
 ```
 
-meganote auto-detects GhosttyKit in these locations:
+shade auto-detects GhosttyKit in these locations:
 1. `GHOSTTYKIT_PATH` environment variable
 2. `./vendor/GhosttyKit` (vendored in repo)
 3. `~/src/ghostty/macos/GhosttyKit.xcframework/macos-arm64`
@@ -142,19 +160,19 @@ meganote auto-detects GhosttyKit in these locations:
 
 ```bash
 # Open default shell
-meganote
+shade
 
 # Custom size (40% of screen)
-meganote --width 0.4 --height 0.4
+shade --width 0.4 --height 0.4
 
 # Run nvim directly
-meganote --command nvim --working-directory ~/notes
+shade --command nvim --working-directory ~/notes
 
 # Start hidden (show via IPC later)
-meganote --hidden
+shade --hidden
 
 # Debug output
-meganote --verbose
+shade --verbose
 ```
 
 ### With Hammerspoon
@@ -163,49 +181,49 @@ The recommended setup uses Hammerspoon for hotkey integration:
 
 ```lua
 -- ~/.hammerspoon/init.lua or your config
-local meganote = require("lib.meganote")
+local shade = require("lib.interop.shade")
 
 -- Configure
-meganote.configure({
+shade.configure({
     width = 0.4,
     height = 0.4,
-    command = "/bin/zsh -c 'rm -f /tmp/nvim-capture.sock; exec nvim --listen /tmp/nvim-capture.sock'",
+    command = "/bin/zsh -c 'rm -f ~/.local/state/shade/nvim.sock; exec nvim --listen ~/.local/state/shade/nvim.sock'",
     workingDirectory = os.getenv("HOME") .. "/notes/captures",
     startHidden = true,
 })
 
 -- Pre-launch hidden
-meganote.launch()
+shade.launch()
 
 -- Bind hotkey
 hs.hotkey.bind({"cmd", "alt", "ctrl", "shift"}, "n", function()
-    meganote.captureWithContext()
+    shade.captureWithContext()
 end)
 ```
 
-The `meganote.lua` module handles:
-- Launching meganote as a background process
+The `shade.lua` module handles:
+- Launching shade as a background process
 - Sending IPC notifications to control visibility
 - Context-aware capture (gathers frontmost app info)
-- Opening files in nvim via `--remote`
+- Opening files in nvim via RPC
 
 ## Development
 
 ### Project Structure
 
 ```
-meganote/
-├── Package.swift          # Swift PM config (auto-detects GhosttyKit)
-├── flake.nix             # Nix flake (builds GhosttyKit from ghostty input)
-├── flake.lock            # Pinned dependencies including ghostty
-├── justfile              # Task runner
-├── LICENSE               # MIT (with ghostty attribution)
-├── README.md
-└── Sources/
-    ├── main.swift            # CLI parsing, logging, ghostty init
-    ├── MegaAppDelegate.swift # App lifecycle, IPC, tick timer
-    ├── MegaPanel.swift       # Floating NSPanel
-    └── TerminalView.swift    # Ghostty surface view
+shade/
++-- Package.swift          # Swift PM config (auto-detects GhosttyKit)
++-- flake.nix              # Nix flake (builds GhosttyKit from ghostty input)
++-- flake.lock             # Pinned dependencies including ghostty
++-- justfile               # Task runner
++-- LICENSE                # MIT (with ghostty attribution)
++-- README.md
++-- Sources/
+    +-- main.swift            # CLI parsing, logging, ghostty init
+    +-- ShadeAppDelegate.swift # App lifecycle, IPC, tick timer
+    +-- ShadePanel.swift       # Floating NSPanel
+    +-- TerminalView.swift     # Ghostty surface view
 ```
 
 ### Just Commands
@@ -238,7 +256,7 @@ just format             # Format code (needs swift-format)
 just lint               # Lint code
 
 # Nix
-just nix-build          # Build meganote with Nix
+just nix-build          # Build shade with Nix
 just nix-build-ghosttykit # Build only GhosttyKit
 just nix-run [ARGS]     # Run with Nix
 just nix-develop        # Enter dev shell (full, with Zig)
@@ -279,17 +297,17 @@ ghosttyKit = pkgs.stdenv.mkDerivation {
 ```
 
 **Architecture targeting:**
-- `aarch64-darwin` → `-Dtarget=aarch64-macos` → `macos-arm64/`
-- `x86_64-darwin` → `-Dtarget=x86_64-macos` → `macos-x86_64/`
+- `aarch64-darwin` -> `-Dtarget=aarch64-macos` -> `macos-arm64/`
+- `x86_64-darwin` -> `-Dtarget=x86_64-macos` -> `macos-x86_64/`
 
 **Output structure:**
 ```
 $GHOSTTYKIT_PATH/
-├── lib/
-│   └── libghostty-fat.a    # Static library
-└── include/
-    ├── ghostty.h           # C header
-    └── module.modulemap    # Swift module map
++-- lib/
+|   +-- libghostty-fat.a    # Static library
++-- include/
+    +-- ghostty.h           # C header
+    +-- module.modulemap    # Swift module map
 ```
 
 **Available flake outputs:**
@@ -297,8 +315,8 @@ $GHOSTTYKIT_PATH/
 # Just GhosttyKit (useful for other projects)
 nix build .#ghosttykit
 
-# meganote binary
-nix build .#meganote
+# shade binary
+nix build .#shade
 # or
 nix build  # default
 
@@ -331,22 +349,22 @@ command.withCString { cmdPtr in
 - `ghostty_config_t` = App-level settings (loaded from user's `~/.config/ghostty/config`)
 - `ghostty_surface_config_s` = Per-surface settings (command, working directory)
 
-There's no `ghostty_config_load_string()` — command/workingDir go in surface config only.
+There's no `ghostty_config_load_string()` -- command/workingDir go in surface config only.
 
 ### Process Exit Detection
 
-meganote polls `ghostty_surface_process_exited()` in the 60fps tick timer. When the child process exits:
-1. Hide panel
-2. Terminate app
+shade polls `ghostty_surface_process_exited()` in the 60fps tick timer. When the child process exits:
+1. Hide panel (don't terminate)
+2. Await new IPC command to show again
 
-This ensures clean exit when nvim quits (`:wq`).
+This enables persistent background operation.
 
 ### Window Behavior
 
-- `NSPanel` with `.nonactivatingPanel` — doesn't steal focus
-- `.floating` level — above normal windows
-- `.canJoinAllSpaces` — visible on all Spaces
-- `.fullScreenAuxiliary` — can overlay fullscreen apps
+- `NSPanel` with `.nonactivatingPanel` -- doesn't steal focus
+- `.floating` level -- above normal windows
+- `.canJoinAllSpaces` -- visible on all Spaces
+- `.fullScreenAuxiliary` -- can overlay fullscreen apps
 - Hidden title bar and window buttons for clean appearance
 
 ### nvim Server Socket
@@ -354,7 +372,7 @@ This ensures clean exit when nvim quits (`:wq`).
 When using nvim with `--listen`, wrap in shell to clean stale sockets:
 
 ```bash
-/bin/zsh -c 'rm -f /tmp/nvim-capture.sock; exec nvim --listen /tmp/nvim-capture.sock'
+/bin/zsh -c 'rm -f ~/.local/state/shade/nvim.sock; exec nvim --listen ~/.local/state/shade/nvim.sock'
 ```
 
 This prevents "address already in use" errors on restart.
@@ -381,22 +399,22 @@ just rebuild-release
 Use `--verbose` or `-v` flag to enable debug logging:
 
 ```bash
-meganote --verbose
+shade --verbose
 ```
 
 ### libghostty Migration Path
 
 This project currently builds against a local GhosttyKit framework compiled from the Ghostty source. When libghostty is released as a standalone public library:
 
-1. **flake.nix** — Update ghostty input to use official libghostty package
-2. **Package.swift** — Simplify to reference the official package
-3. **API compatibility** — The C API (`ghostty_*` functions) should remain stable
+1. **flake.nix** -- Update ghostty input to use official libghostty package
+2. **Package.swift** -- Simplify to reference the official package
+3. **API compatibility** -- The C API (`ghostty_*` functions) should remain stable
 
 The abstraction layer (TerminalView, callbacks) isolates libghostty interactions, making migration straightforward.
 
 ## License
 
-MIT — See [LICENSE](LICENSE) for details.
+MIT -- See [LICENSE](LICENSE) for details.
 
 This project uses [libghostty](https://github.com/ghostty-org/ghostty) by Mitchell Hashimoto, also MIT licensed.
 

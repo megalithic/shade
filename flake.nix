@@ -1,5 +1,5 @@
 {
-  description = "meganote - Floating terminal panel CLI using libghostty";
+  description = "shade - Floating terminal panel CLI using libghostty. A lighter shade of ghost.";
 
   inputs = {
     nixpkgs.url = "github:NixOS/nixpkgs/nixpkgs-unstable";
@@ -8,12 +8,19 @@
     # Ghostty source for building libghostty
     ghostty = {
       url = "github:ghostty-org/ghostty";
-      flake = false;  # Don't use their flake outputs, just the source
+      flake = false; # Don't use their flake outputs, just the source
     };
   };
 
-  outputs = { self, nixpkgs, flake-utils, ghostty }:
-    flake-utils.lib.eachSystem [ "aarch64-darwin" "x86_64-darwin" ] (system:
+  outputs =
+    {
+      self,
+      nixpkgs,
+      flake-utils,
+      ghostty,
+    }:
+    flake-utils.lib.eachSystem [ "aarch64-darwin" "x86_64-darwin" ] (
+      system:
       let
         pkgs = nixpkgs.legacyPackages.${system};
 
@@ -33,23 +40,26 @@
 
           nativeBuildInputs = with pkgs; [
             zig_0_13
-            git  # Required by ghostty's build.zig for version info
+            git # Required by ghostty's build.zig for version info
           ];
 
           # Darwin-specific dependencies
-          buildInputs = pkgs.lib.optionals pkgs.stdenv.isDarwin (with pkgs.darwin.apple_sdk.frameworks; [
-            Cocoa
-            Metal
-            MetalKit
-            CoreGraphics
-            CoreText
-            CoreVideo
-            IOSurface
-            Carbon
-            QuartzCore
-            Foundation
-            AppKit
-          ]);
+          buildInputs = pkgs.lib.optionals pkgs.stdenv.isDarwin (
+            with pkgs.darwin.apple_sdk.frameworks;
+            [
+              Cocoa
+              Metal
+              MetalKit
+              CoreGraphics
+              CoreText
+              CoreVideo
+              IOSurface
+              Carbon
+              QuartzCore
+              Foundation
+              AppKit
+            ]
+          );
 
           dontConfigure = true;
           dontInstall = true;
@@ -98,13 +108,14 @@
           };
         };
 
-      in {
+      in
+      {
         # Expose GhosttyKit as a package
         packages.ghosttykit = ghosttyKit;
 
         # Development shell with all build tools
         devShells.default = pkgs.mkShell {
-          name = "meganote-dev";
+          name = "shade-dev";
 
           buildInputs = with pkgs; [
             # Swift toolchain
@@ -122,7 +133,7 @@
           GHOSTTYKIT_PATH = "${ghosttyKit}";
 
           shellHook = ''
-            echo "🗒️  meganote development shell"
+            echo "👻 shade development shell (a lighter shade of ghost)"
             echo "Swift: $(swift --version 2>/dev/null | head -1 || echo 'not found')"
             echo "Zig: $(zig version 2>/dev/null || echo 'not found')"
             echo ""
@@ -139,7 +150,7 @@
 
         # Lite shell without Zig (uses pre-built GhosttyKit)
         devShells.lite = pkgs.mkShell {
-          name = "meganote-lite";
+          name = "shade-lite";
 
           buildInputs = with pkgs; [
             swift
@@ -150,14 +161,14 @@
           GHOSTTYKIT_PATH = "${ghosttyKit}";
 
           shellHook = ''
-            echo "🗒️  meganote lite shell"
+            echo "👻 shade lite shell"
             echo "✓ GhosttyKit: $GHOSTTYKIT_PATH"
           '';
         };
 
-        # meganote package
+        # shade package
         packages.default = pkgs.stdenv.mkDerivation {
-          pname = "meganote";
+          pname = "shade";
           inherit version;
 
           src = ./.;
@@ -191,20 +202,20 @@
           installPhase = ''
             runHook preInstall
             mkdir -p $out/bin
-            cp .build/release/meganote $out/bin/
+            cp .build/release/shade $out/bin/
             runHook postInstall
           '';
 
           meta = with pkgs.lib; {
-            description = "Floating terminal panel CLI using libghostty";
-            homepage = "https://github.com/megalithic/meganote";
+            description = "Floating terminal panel CLI using libghostty. A lighter shade of ghost.";
+            homepage = "https://github.com/megalithic/shade";
             license = licenses.mit;
             platforms = platforms.darwin;
-            mainProgram = "meganote";
+            mainProgram = "shade";
           };
         };
 
-        packages.meganote = self.packages.${system}.default;
+        packages.shade = self.packages.${system}.default;
       }
     );
 }
