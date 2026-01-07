@@ -2,7 +2,17 @@
 
 A **standalone CLI executable** for macOS that provides a floating terminal panel using [libghostty](https://github.com/ghostty-org/ghostty). A lighter shade of ghost.
 
-Designed for quick note capture workflows with nvim.
+## Use Cases
+
+shade is a **general-purpose floating terminal** that can run any command:
+
+- **Quick shell access**: Pop up a terminal for quick commands, hide when done
+- **Note capture with nvim**: Deep nvim integration for note-taking workflows
+- **REPLs and scripts**: Run Python, Node, or any interactive tool in a floating window
+- **Monitoring**: Keep `htop`, `lazygit`, or logs visible while working
+- **AI assistants**: Run CLI tools like `aichat` or `ollama` in an always-available panel
+
+The nvim integration (msgpack-rpc, note capture, daily notes) is optional -- shade works great as a simple floating terminal wrapper.
 
 ## What It Is
 
@@ -47,19 +57,31 @@ When run, it creates a floating NSPanel window hosting a ghostty terminal surfac
 |  ShadeAppDelegate      App lifecycle, IPC listener, tick    |
 |  ShadePanel            NSPanel: floating, non-activating    |
 |  TerminalView          NSView hosting ghostty surface       |
+|  NvimSocketManager     Native msgpack-rpc over Unix socket  |
+|  MsgpackRpc            Protocol encoder/decoder             |
 +-------------------------------------------------------------+
-                              |
-                              v
+           |                                    |
+           v                                    v
++-------------------------+    +--------------------------------+
+|   libghostty (Zig->C)   |    |   Unix Socket (msgpack-rpc)    |
+|   Terminal emulation    |    |   ~/.local/state/shade/        |
+|   GPU rendering (Metal) |    |   nvim.sock                    |
+|   PTY management        |    |                                |
++-------------------------+    +--------------------------------+
+           |                                    |
+           v                                    v
 +-------------------------------------------------------------+
-|                 libghostty (Zig -> C)                       |
-|  Terminal emulation, GPU rendering (Metal), PTY management  |
-+-------------------------------------------------------------+
-                              |
-                              v
-+-------------------------------------------------------------+
-|                 Child Process (e.g., nvim)                  |
+|                 nvim (--listen <socket>)                    |
+|   - Terminal UI via libghostty PTY                          |
+|   - API access via msgpack-rpc socket                       |
 +-------------------------------------------------------------+
 ```
+
+**Communication Paths:**
+1. **Hammerspoon -> shade**: Distributed notifications (`io.shade.*`)
+2. **shade -> libghostty**: C FFI calls for terminal rendering
+3. **shade <-> nvim**: Bidirectional msgpack-rpc over Unix socket
+4. **libghostty <-> nvim**: PTY for terminal I/O
 
 ### IPC Protocol
 
@@ -187,6 +209,32 @@ shade --hidden
 shade --verbose
 ```
 
+### Non-Nvim Examples
+
+shade works great with any terminal command:
+
+```bash
+# Floating Python REPL
+shade --command python3 --width 0.5 --height 0.4
+
+# Floating lazygit for the current repo
+shade --command lazygit --working-directory ~/code/myproject
+
+# System monitoring
+shade --command "htop" --width 0.6 --height 0.5
+
+# AI chat assistant
+shade --command "aichat" --width 0.4 --height 0.6
+
+# Tail logs
+shade --command "tail -f /var/log/system.log" --width 0.8 --height 0.3
+
+# Interactive node REPL
+shade --command node --working-directory ~/projects/myapp
+```
+
+When the command exits, shade hides and waits for the next toggle -- it doesn't quit. This makes it perfect for ephemeral tasks.
+
 ### With Hammerspoon
 
 The recommended setup uses Hammerspoon for hotkey integration:
@@ -219,6 +267,220 @@ The `shade.lua` module handles:
 - Context-aware capture (gathers frontmost app info)
 - Opening files in nvim via RPC
 
+#### Complete Hammerspoon Module Example
+
+Here's a full-featured `shade.lua` module for Hammerspoon:
+
+```lua
+-- ~/.hammerspoon/lib/interop/shade.lua
+local M = {}
+
+local stateDir = os.getenv("HOME") .. "/.local/state/shade"
+local contextFile = stateDir .. "/context.json"
+
+-- Default configuration
+M.config = {
+    binary = os.getenv("HOME") .. "/.local/bin/shade",
+    width = 0.4,
+    height = 0.4,
+    command = nil,  -- Set in configure()
+    workingDirectory = os.getenv("HOME") .. "/notes",
+    startHidden = true,
+    verbose = false,
+}
+
+-- Configure shade options
+function M.configure(opts)
+    for k, v in pairs(opts or {}) do
+        M.config[k] = v
+    end
+    
+    -- Default command if not set
+    if not M.config.command then
+        M.config.command = string.format(
+            "/bin/zsh -c 'rm -f %s/nvim.sock; exec nvim --listen %s/nvim.sock'",
+            stateDir, stateDir
+        )
+    end
+end
+
+-- Launch shade (if not already running)
+function M.launch()
+    -- Check if already running
+    local pidFile = stateDir .. "/shade.pid"
+    local f = io.open(pidFile, "r")
+    if f then
+        local pid = f:read("*n")
+        f:close()
+        if pid then
+            local result = os.execute("kill -0 " .. pid .. " 2>/dev/null")
+            if result then
+                return -- Already running
+            end
+        end
+    end
+    
+    -- Build arguments
+    local args = {
+        "-w", tostring(M.config.width),
+        "-h", tostring(M.config.height),
+        "-c", M.config.command,
+        "-d", M.config.workingDirectory,
+    }
+    if M.config.startHidden then
+        table.insert(args, "--hidden")
+    end
+    if M.config.verbose then
+        table.insert(args, "--verbose")
+    end
+    
+    -- Launch as background task
+    hs.task.new(M.config.binary, nil, args):start()
+end
+
+-- Send IPC notification to shade
+function M.notify(name)
+    hs.distributednotifications.post("io.shade." .. name, nil, nil)
+end
+
+-- Toggle visibility
+function M.toggle()
+    M.launch()  -- Ensure running
+    M.notify("toggle")
+end
+
+-- Show panel
+function M.show()
+    M.launch()
+    M.notify("show")
+end
+
+-- Hide panel
+function M.hide()
+    M.notify("hide")
+end
+
+-- Quit shade
+function M.quit()
+    M.notify("quit")
+end
+
+-- Gather context from frontmost app
+local function gatherContext()
+    local app = hs.application.frontmostApplication()
+    local win = app and app:focusedWindow()
+    
+    local context = {
+        timestamp = os.date("!%Y-%m-%dT%H:%M:%SZ"),
+        source_app = app and app:name() or "Unknown",
+        source_bundle = app and app:bundleID() or nil,
+        window_title = win and win:title() or nil,
+    }
+    
+    -- Try to get URL from browser
+    if app then
+        local bundleID = app:bundleID()
+        if bundleID == "com.apple.Safari" then
+            local ok, url = hs.osascript.applescript([[
+                tell application "Safari" to return URL of current tab of front window
+            ]])
+            if ok then context.url = url end
+        elseif bundleID == "com.google.Chrome" then
+            local ok, url = hs.osascript.applescript([[
+                tell application "Google Chrome" to return URL of active tab of front window
+            ]])
+            if ok then context.url = url end
+        elseif bundleID == "company.thebrowser.Browser" then
+            local ok, url = hs.osascript.applescript([[
+                tell application "Arc" to return URL of active tab of front window
+            ]])
+            if ok then context.url = url end
+        end
+    end
+    
+    -- Try to get selected text
+    local oldClipboard = hs.pasteboard.getContents()
+    hs.eventtap.keyStroke({"cmd"}, "c", 50000)  -- 50ms
+    hs.timer.usleep(100000)  -- 100ms
+    local selection = hs.pasteboard.getContents()
+    if selection and selection ~= oldClipboard and #selection < 10000 then
+        context.selection = selection
+    end
+    hs.pasteboard.setContents(oldClipboard or "")
+    
+    return context
+end
+
+-- Write context to file for shade to read
+local function writeContext(context)
+    -- Ensure directory exists
+    os.execute("mkdir -p " .. stateDir)
+    
+    local f = io.open(contextFile, "w")
+    if f then
+        f:write(hs.json.encode(context))
+        f:close()
+    end
+end
+
+-- Open quick capture with context
+function M.captureWithContext()
+    M.launch()
+    
+    -- Gather and write context
+    local context = gatherContext()
+    writeContext(context)
+    
+    -- Tell shade to open capture
+    M.notify("note.capture")
+end
+
+-- Open daily note
+function M.openDailyNote()
+    M.launch()
+    M.notify("note.daily")
+end
+
+-- Example hotkey bindings (add to your init.lua)
+--[[
+local shade = require("lib.interop.shade")
+
+shade.configure({
+    width = 0.5,
+    height = 0.6,
+    workingDirectory = os.getenv("HOME") .. "/notes",
+})
+
+-- Hyper+N: Quick capture with context
+hs.hotkey.bind({"cmd", "alt", "ctrl", "shift"}, "n", shade.captureWithContext)
+
+-- Hyper+D: Daily note
+hs.hotkey.bind({"cmd", "alt", "ctrl", "shift"}, "d", shade.openDailyNote)
+
+-- Hyper+Space: Toggle shade
+hs.hotkey.bind({"cmd", "alt", "ctrl", "shift"}, "space", shade.toggle)
+]]
+
+return M
+```
+
+#### Context JSON Format
+
+When `captureWithContext()` is called, shade reads `~/.local/state/shade/context.json`:
+
+```json
+{
+    "timestamp": "2026-01-07T12:30:00Z",
+    "source_app": "Arc",
+    "source_bundle": "company.thebrowser.Browser",
+    "window_title": "GitHub - shade repository",
+    "url": "https://github.com/megalithic/shade",
+    "selection": "Selected text from the page..."
+}
+```
+
+This context is available to nvim for creating rich capture notes with source attribution.
+
 ## Development
 
 ### Project Structure
@@ -237,7 +499,9 @@ shade/
     +-- ShadePanel.swift       # Floating NSPanel
     +-- TerminalView.swift     # Ghostty surface view
     +-- StateDirectory.swift   # XDG state directory management
-    +-- NvimRPC.swift          # Nvim server communication
+    +-- NvimRPC.swift          # Nvim CLI communication (--server --remote-send)
+    +-- NvimSocketManager.swift # Native msgpack-rpc over Unix socket
+    +-- MsgpackRpc.swift       # Msgpack-RPC protocol encoder/decoder
     +-- GlobalHotkey.swift     # Emergency escape hotkey (CGEvent tap)
 ```
 
@@ -391,6 +655,87 @@ When using nvim with `--listen`, wrap in shell to clean stale sockets:
 ```
 
 This prevents "address already in use" errors on restart.
+
+### Native Nvim RPC (msgpack-rpc)
+
+shade includes two approaches for communicating with nvim:
+
+**Option A: CLI Shell-out (`NvimRPC.swift`)**
+- Uses `nvim --server <socket> --remote-send/--remote-expr`
+- Simple, spawns a process per command
+- Good for occasional commands
+
+**Option B: Native Socket (`NvimSocketManager.swift`)**
+- Persistent Unix socket connection using msgpack-rpc protocol
+- No process spawning overhead
+- Supports async requests, notifications, and bidirectional communication
+- Access to all 400+ nvim API functions
+
+The native socket manager implements the [msgpack-rpc spec](https://github.com/msgpack-rpc/msgpack-rpc/blob/master/spec.md):
+
+```
+Message Types:
+- Request:      [0, msgid, method, params]  -> awaits Response
+- Response:     [1, msgid, error, result]   -> matches Request by msgid
+- Notification: [2, method, params]         -> fire-and-forget
+```
+
+**Architecture:**
+```
++------------------+     Unix Socket      +------------------+
+|     shade        | <-- msgpack-rpc -->  |      nvim        |
+|                  |                      |                  |
+| NvimSocketManager|     ~/.local/state/  | --listen <sock>  |
+|   MsgpackRpc     |     shade/nvim.sock  |                  |
++------------------+                      +------------------+
+```
+
+**Usage Example (Swift):**
+```swift
+// Create and connect
+let nvim = NvimSocketManager()
+try await nvim.connect()
+
+// Call nvim API functions
+let response = try await nvim.request(
+    method: "nvim_eval",
+    params: [.string("expand('%:p')")]
+)
+if response.isSuccess, let path = response.stringResult {
+    print("Current file: \(path)")
+}
+
+// Send notification (no response)
+try nvim.notify(method: "nvim_command", params: [.string("echo 'Hello from shade!'")])
+
+// Listen for events
+for await message in nvim.messageStream {
+    switch message {
+    case .notification(let notif):
+        print("Got notification: \(notif.method)")
+    case .request(let req):
+        // nvim asking us something (rare)
+        try nvim.respond(msgid: req.msgid, result: .bool(true))
+    default:
+        break
+    }
+}
+
+// Disconnect
+await nvim.disconnect()
+```
+
+**Common nvim API Methods:**
+| Method | Description | Example Params |
+|--------|-------------|----------------|
+| `nvim_eval` | Evaluate Vimscript | `[.string("expand('%')")]` |
+| `nvim_command` | Run Ex command | `[.string(":write")]` |
+| `nvim_buf_get_name` | Get buffer filename | `[.int(0)]` (0 = current) |
+| `nvim_buf_set_lines` | Set buffer content | `[.int(0), .int(0), .int(-1), .bool(false), .array([...])]` |
+| `nvim_get_current_buf` | Get current buffer handle | `[]` |
+| `nvim_buf_attach` | Subscribe to buffer events | `[.int(bufnr), .bool(false), .map([:])]` |
+
+See [nvim API docs](https://neovim.io/doc/user/api.html) for the full list.
 
 ## Maintenance
 
