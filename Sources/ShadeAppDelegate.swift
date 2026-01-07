@@ -31,6 +31,9 @@ class ShadeAppDelegate: NSObject, NSApplicationDelegate {
     /// Flag to prevent multiple termination attempts
     private var isTerminating = false
 
+    /// Flag to track if we're in backgrounded state (surface destroyed, awaiting new command)
+    private var isBackgrounded = false
+
     // MARK: - Initialization
 
     init(config: AppConfig) {
@@ -96,22 +99,40 @@ class ShadeAppDelegate: NSObject, NSApplicationDelegate {
             object: nil
         )
 
+        // Quit notification - actually terminate the app
+        center.addObserver(
+            self,
+            selector: #selector(handleQuitNotification),
+            name: NSNotification.Name("io.shade.quit"),
+            object: nil
+        )
+
         Log.debug("Listening for IPC notifications")
     }
 
     @objc private func handleToggleNotification(_ notification: Notification) {
         Log.debug("IPC: toggle")
-        togglePanel()
+        if isPanelVisible {
+            hidePanel()
+        } else {
+            showPanelWithSurface()
+        }
     }
 
     @objc private func handleShowNotification(_ notification: Notification) {
         Log.debug("IPC: show")
-        showPanel()
+        showPanelWithSurface()
     }
 
     @objc private func handleHideNotification(_ notification: Notification) {
         Log.debug("IPC: hide")
         hidePanel()
+    }
+
+    @objc private func handleQuitNotification(_ notification: Notification) {
+        Log.debug("IPC: quit")
+        isTerminating = true
+        NSApp.terminate(nil)
     }
 
     func applicationWillTerminate(_ notification: Notification) {
@@ -157,6 +178,27 @@ class ShadeAppDelegate: NSObject, NSApplicationDelegate {
     /// Check if panel is visible
     var isPanelVisible: Bool {
         return panel?.isVisible ?? false
+    }
+
+    /// Show panel, recreating surface if needed (when backgrounded)
+    func showPanelWithSurface() {
+        if isBackgrounded, let terminalView = terminalView {
+            Log.debug("Recreating surface from backgrounded state")
+            terminalView.recreateSurface(
+                command: appConfig.command,
+                workingDirectory: appConfig.workingDirectory
+            )
+            isBackgrounded = false
+        }
+        panel?.show()
+    }
+
+    /// Background the app - destroy surface but keep running
+    private func backgroundApp() {
+        Log.debug("Backgrounding app (process exited)")
+        hidePanel()
+        terminalView?.destroySurface()
+        isBackgrounded = true
     }
 
     // MARK: - Ghostty Callbacks (Static for C interop)
@@ -307,16 +349,14 @@ class ShadeAppDelegate: NSObject, NSApplicationDelegate {
             guard let self = self, let app = self.ghosttyApp else { return }
             ghostty_app_tick(app)
 
-            // Check if child process has exited (only if not already terminating)
+            // Check if child process has exited (only if not already backgrounded/terminating)
             if !self.isTerminating,
+               !self.isBackgrounded,
                let terminalView = self.terminalView,
+               terminalView.hasSurface,
                terminalView.hasProcessExited() {
-                self.isTerminating = true
-                Log.debug("Child process exited, terminating")
-                self.hidePanel()
-                DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
-                    NSApp.terminate(nil)
-                }
+                Log.debug("Child process exited, backgrounding")
+                self.backgroundApp()
             }
         }
     }

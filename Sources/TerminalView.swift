@@ -330,6 +330,30 @@ class TerminalView: NSView {
         return ghostty_surface_process_exited(surface)
     }
 
+    /// Check if surface exists
+    var hasSurface: Bool {
+        return surface != nil
+    }
+
+    /// Destroy the current surface (called when process exits and we're backgrounding)
+    func destroySurface() {
+        if let surface = surface {
+            Log.debug("Destroying surface")
+            ghostty_surface_free(surface)
+            self.surface = nil
+        }
+    }
+
+    /// Recreate the surface with new command/workingDirectory
+    func recreateSurface(command: String? = nil, workingDirectory: String? = nil) {
+        destroySurface()
+        Log.debug("Recreating surface")
+        createSurfaceWithStrings(
+            command: command ?? self.command,
+            workingDirectory: workingDirectory ?? self.workingDirectory
+        )
+    }
+
     // MARK: - Helpers
 
     private func convertModifiers(_ flags: NSEvent.ModifierFlags) -> ghostty_input_mods_e {
