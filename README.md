@@ -96,6 +96,18 @@ shade uses XDG-compliant paths for state:
 +-- shade.pid       # Process management
 ```
 
+### Key Features
+
+**Background-on-Exit**: When the child process (e.g., nvim `:wq`) exits, shade hides instead of terminating. The app stays running in the background, ready to show again instantly when triggered.
+
+**Emergency Escape Hotkey**: Press `Cmd+Escape` at any time to hide shade, even if Hammerspoon is broken or unresponsive. This uses a CGEvent tap and requires Accessibility permissions.
+
+**Nvim RPC Integration**: shade can communicate with nvim via `--server` to open files, run commands, and check buffer state. The nvim socket path is `~/.local/state/shade/nvim.sock`.
+
+**Note Workflows**:
+- `io.shade.note.capture`: Opens a new quick capture note. Reads context from `context.json` (written by Hammerspoon) for source app, URL, selection, etc.
+- `io.shade.note.daily`: Opens today's daily note, using `:ObsidianToday` if available.
+
 ## Installation
 
 ### With Nix (Recommended)
@@ -224,6 +236,9 @@ shade/
     +-- ShadeAppDelegate.swift # App lifecycle, IPC, tick timer
     +-- ShadePanel.swift       # Floating NSPanel
     +-- TerminalView.swift     # Ghostty surface view
+    +-- StateDirectory.swift   # XDG state directory management
+    +-- NvimRPC.swift          # Nvim server communication
+    +-- GlobalHotkey.swift     # Emergency escape hotkey (CGEvent tap)
 ```
 
 ### Just Commands
