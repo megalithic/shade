@@ -50,6 +50,11 @@ class ShadeAppDelegate: NSObject, NSApplicationDelegate {
         // Make this a background app (no dock icon, no menu bar when hidden)
         NSApp.setActivationPolicy(.accessory)
 
+        // Setup XDG state directory
+        StateDirectory.ensureDirectoryExists()
+        StateDirectory.writePIDFile()
+        StateDirectory.cleanupNvimSocket()
+
         // Initialize ghostty
         guard initializeGhostty() else {
             Log.error("Failed to initialize ghostty")
@@ -67,6 +72,7 @@ class ShadeAppDelegate: NSObject, NSApplicationDelegate {
         setupNotificationListener()
 
         Log.debug("Ready")
+        Log.debug("State directory: \(StateDirectory.baseDir.path)")
     }
 
     // MARK: - Notification Listener (for Hammerspoon integration)
@@ -151,6 +157,9 @@ class ShadeAppDelegate: NSObject, NSApplicationDelegate {
             ghostty_config_free(cfg)
             ghosttyConfig = nil
         }
+
+        // Clean up state files
+        StateDirectory.removePIDFile()
     }
 
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool {
