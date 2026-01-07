@@ -208,18 +208,33 @@ class ShadeAppDelegate: NSObject, NSApplicationDelegate {
         }
 
         // Show panel with surface (will recreate if backgrounded)
-        // TODO: When nvim RPC is implemented (shade-141.8), send command
-        // to open a new capture file with the context
         showPanelWithSurface()
+
+        // After surface is ready, open a new capture file
+        // Use a small delay to ensure nvim has started
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
+            if NvimRPC.isServerRunning() {
+                _ = NvimRPC.openNewCapture(context: context)
+            } else {
+                Log.debug("Nvim server not ready yet, file will open on next capture")
+            }
+        }
     }
 
     @objc private func handleDailyNoteNotification(_ notification: Notification) {
         Log.debug("IPC: note.daily")
 
         // Show panel with surface (will recreate if backgrounded)
-        // TODO: When nvim RPC is implemented (shade-141.8), send command
-        // to open today's daily note file
         showPanelWithSurface()
+
+        // After surface is ready, open today's daily note
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
+            if NvimRPC.isServerRunning() {
+                _ = NvimRPC.openDailyNote()
+            } else {
+                Log.debug("Nvim server not ready yet, daily note will open on next request")
+            }
+        }
     }
 
     func applicationWillTerminate(_ notification: Notification) {
