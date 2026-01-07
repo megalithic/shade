@@ -65,6 +65,9 @@ class ShadeAppDelegate: NSObject, NSApplicationDelegate {
         // Create the floating panel
         createPanel()
 
+        // Setup minimal menu bar for Cmd+Q support
+        setupMenuBar()
+
         // Start the event loop timer
         startTickTimer()
 
@@ -73,6 +76,32 @@ class ShadeAppDelegate: NSObject, NSApplicationDelegate {
 
         Log.debug("Ready")
         Log.debug("State directory: \(StateDirectory.baseDir.path)")
+    }
+
+    // MARK: - Menu Bar (for Cmd+Q support)
+
+    private func setupMenuBar() {
+        // Create a minimal menu bar so Cmd+Q works even in accessory mode
+        let mainMenu = NSMenu()
+
+        // App menu (required for Cmd+Q)
+        let appMenuItem = NSMenuItem()
+        mainMenu.addItem(appMenuItem)
+
+        let appMenu = NSMenu()
+        appMenuItem.submenu = appMenu
+
+        // Quit item with Cmd+Q shortcut
+        let quitItem = NSMenuItem(
+            title: "Quit shade",
+            action: #selector(NSApplication.terminate(_:)),
+            keyEquivalent: "q"
+        )
+        quitItem.keyEquivalentModifierMask = .command
+        appMenu.addItem(quitItem)
+
+        NSApp.mainMenu = mainMenu
+        Log.debug("Menu bar configured (Cmd+Q enabled)")
     }
 
     // MARK: - Notification Listener (for Hammerspoon integration)
