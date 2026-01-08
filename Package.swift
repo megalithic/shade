@@ -83,6 +83,7 @@ let package = Package(
     products: [
         .executable(name: "shade", targets: ["shade"]),
         .library(name: "MsgpackRpc", targets: ["MsgpackRpc"]),
+        .library(name: "ContextGatherer", targets: ["ContextGatherer"]),
     ],
     dependencies: [
         .package(url: "https://github.com/a2/MessagePack.swift.git", from: "4.0.0"),
@@ -96,15 +97,22 @@ let package = Package(
             ],
             path: "Sources/MsgpackRpc"
         ),
+        // Context gathering library (no GhosttyKit dependency)
+        .target(
+            name: "ContextGatherer",
+            dependencies: [],
+            path: "Sources/ContextGatherer"
+        ),
         // Main executable with GhosttyKit
         .executableTarget(
             name: "shade",
             dependencies: [
                 "MsgpackRpc",
+                "ContextGatherer",
                 .product(name: "MessagePack", package: "MessagePack.swift"),
             ],
             path: "Sources",
-            exclude: ["MsgpackRpc"],
+            exclude: ["MsgpackRpc", "ContextGatherer"],
             swiftSettings: [
                 // Import path for GhosttyKit module
                 .unsafeFlags([
@@ -141,6 +149,14 @@ let package = Package(
                 .product(name: "MessagePack", package: "MessagePack.swift"),
             ],
             path: "Tests/MsgpackRpcTests"
+        ),
+        // Tests for ContextGatherer
+        .testTarget(
+            name: "ContextGathererTests",
+            dependencies: [
+                "ContextGatherer",
+            ],
+            path: "Tests/ContextGathererTests"
         ),
     ]
 )
