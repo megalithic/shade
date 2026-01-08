@@ -313,10 +313,13 @@ actor ShadeNvim {
         }
     }
     
-    /// Open a new capture note
+    /// Open a new text capture note
     ///
-    /// - Parameter context: Optional capture context (for future use with templates)
-    /// - Returns: Path to the created capture file
+    /// Uses obsidian.nvim template which reads context.json for substitution
+    /// (title, source URL, selection, etc.)
+    ///
+    /// - Parameter context: Capture context (already written to context.json by caller)
+    /// - Returns: Description of the created capture
     /// - Throws: ShadeNvimError if not connected or command fails
     @discardableResult
     func openNewCapture(context: CaptureContext? = nil) async throws -> String {
@@ -324,29 +327,19 @@ actor ShadeNvim {
             throw ShadeNvimError.notConnected
         }
         
-        Log.debug("ShadeNvim: Opening new capture")
-        
-        // Compute capture path (same logic as NvimRPC)
-        let baseDir = ProcessInfo.processInfo.environment["NOTES_HOME"]
-            ?? "\(NSHomeDirectory())/notes"
-        let capturesDir = "\(baseDir)/captures"
-        
-        let formatter = DateFormatter()
-        formatter.dateFormat = "yyyyMMdd-HHmm"
-        let timestamp = formatter.string(from: Date())
-        let filename = "\(timestamp)-capture.md"
-        let filepath = "\(capturesDir)/\(filename)"
+        Log.debug("ShadeNvim: Opening new text capture")
         
         // Log context if provided
         if let ctx = context {
             Log.debug("ShadeNvim: Capture context - app: \(ctx.appName ?? "unknown"), type: \(ctx.appType ?? "unknown")")
         }
         
-        // Open the file (nvim will create it on first save)
+        // Use obsidian.nvim to create note from capture-text template
+        // The template reads context.json (written by ContextGatherer before this call)
         do {
-            try await api.command("edit \(escapeVimPath(filepath))")
-            Log.info("ShadeNvim: Opened capture at \(filepath)")
-            return filepath
+            try await api.command("Obsidian new_from_template capture capture-text")
+            Log.info("ShadeNvim: Created text capture via obsidian.nvim")
+            return "text capture created"
         } catch let error as NvimAPI.APIError {
             throw ShadeNvimError.commandFailed(error.localizedDescription)
         }

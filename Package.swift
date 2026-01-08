@@ -158,5 +158,15 @@ let package = Package(
             ],
             path: "Tests/ContextGathererTests"
         ),
+        // Tests for ShadeServer (uses MsgpackRpc for protocol tests)
+        // Note: Full integration tests require running Shade
+        .testTarget(
+            name: "ShadeServerTests",
+            dependencies: [
+                "MsgpackRpc",
+                .product(name: "MessagePack", package: "MessagePack.swift"),
+            ],
+            path: "Tests/ShadeServerTests"
+        ),
     ]
 )

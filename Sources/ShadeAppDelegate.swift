@@ -87,6 +87,9 @@ class ShadeAppDelegate: NSObject, NSApplicationDelegate {
         // Setup menubar status item
         setupMenuBarItem()
 
+        // Start RPC server for nvim-to-shade communication
+        setupRPCServer()
+
         Log.debug("Ready")
         Log.debug("State directory: \(StateDirectory.baseDir.path)")
     }
@@ -224,6 +227,54 @@ class ShadeAppDelegate: NSObject, NSApplicationDelegate {
             Log.debug("Emergency hotkey registered (Cmd+Escape to hide)")
         } else {
             Log.warn("Emergency hotkey registration failed - Accessibility permissions may be needed")
+        }
+    }
+
+    // MARK: - RPC Server (for nvim-to-shade communication)
+
+    private func setupRPCServer() {
+        Task {
+            // Wire up callbacks
+            ShadeServer.shared.onHide = { [weak self] in
+                self?.hidePanel()
+            }
+            ShadeServer.shared.onShow = { [weak self] in
+                self?.showPanelWithSurface()
+            }
+            ShadeServer.shared.onToggle = { [weak self] in
+                if self?.isPanelVisible == true {
+                    self?.hidePanel()
+                } else {
+                    self?.showPanelWithSurface()
+                }
+            }
+            ShadeServer.shared.onGetContext = {
+                // Return the last gathered context as a dictionary
+                if let ctx = StateDirectory.readGatheredContext() {
+                    return [
+                        "appType": ctx.appType ?? "",
+                        "appName": ctx.appName ?? "",
+                        "bundleID": ctx.bundleID ?? "",
+                        "windowTitle": ctx.windowTitle ?? "",
+                        "url": ctx.url ?? "",
+                        "filePath": ctx.filePath ?? "",
+                        "filetype": ctx.filetype ?? "",
+                        "selection": ctx.selection ?? "",
+                        "detectedLanguage": ctx.detectedLanguage ?? "",
+                        "line": ctx.line ?? 0,
+                        "col": ctx.col ?? 0
+                    ]
+                }
+                return [:]
+            }
+
+            // Register handlers and start server
+            await ShadeServer.shared.registerDefaultHandlers()
+            do {
+                try await ShadeServer.shared.start()
+            } catch {
+                Log.error("Failed to start RPC server: \(error)")
+            }
         }
     }
 
@@ -418,6 +469,11 @@ class ShadeAppDelegate: NSObject, NSApplicationDelegate {
         // Disconnect from nvim
         Task {
             await ShadeNvim.shared.disconnect()
+        }
+
+        // Stop RPC server
+        Task {
+            await ShadeServer.shared.stop()
         }
 
         // Clean up ghostty
