@@ -371,6 +371,9 @@ class ShadeAppDelegate: NSObject, NSApplicationDelegate {
     @objc private func handleNoteCaptureNotification(_ notification: Notification) {
         Log.debug("IPC: note.capture")
 
+        // Resize panel to capture size (smaller)
+        panel?.resize(width: appConfig.captureWidth, height: appConfig.captureHeight)
+
         // Always create a new capture, even if panel is already visible
         // User explicitly requested a capture, so honor that intent
         Task {
@@ -409,6 +412,9 @@ class ShadeAppDelegate: NSObject, NSApplicationDelegate {
     @objc private func handleDailyNoteNotification(_ notification: Notification) {
         Log.debug("IPC: note.daily")
 
+        // Resize panel to daily note size (larger)
+        panel?.resize(width: appConfig.dailyWidth, height: appConfig.dailyHeight)
+
         // Show panel with surface (will recreate if backgrounded)
         showPanelWithSurface()
 
@@ -422,6 +428,9 @@ class ShadeAppDelegate: NSObject, NSApplicationDelegate {
 
     @objc private func handleImageCaptureNotification(_ notification: Notification) {
         Log.debug("IPC: note.capture.image")
+
+        // Resize panel to capture size (smaller)
+        panel?.resize(width: appConfig.captureWidth, height: appConfig.captureHeight)
 
         // Read context (written by clipper.lua with imageFilename)
         let context = StateDirectory.readContext()
@@ -624,8 +633,8 @@ class ShadeAppDelegate: NSObject, NSApplicationDelegate {
 
         Log.debug("Panel size: \(Int(panelSize.width))x\(Int(panelSize.height))")
 
-        // Create floating panel
-        let panel = ShadePanel(contentRect: panelRect)
+        // Create floating panel with screen mode from config
+        let panel = ShadePanel(contentRect: panelRect, screenMode: appConfig.screenMode)
 
         // Create terminal view with command/workingDirectory from config
         let terminalView = TerminalView(
@@ -650,7 +659,16 @@ class ShadeAppDelegate: NSObject, NSApplicationDelegate {
     /// Values <= 1.0 are treated as percentages of screen size
     /// Values > 1.0 are treated as absolute pixel values
     private func calculatePanelSize() -> NSSize {
-        guard let screen = NSScreen.main ?? NSScreen.screens.first else {
+        // Use screen based on config mode (primary vs focused)
+        let screen: NSScreen?
+        switch appConfig.screenMode {
+        case .primary:
+            screen = NSScreen.screens.first
+        case .focused:
+            screen = NSScreen.main ?? NSScreen.screens.first
+        }
+        
+        guard let screen = screen else {
             return NSSize(width: 800, height: 500)
         }
 

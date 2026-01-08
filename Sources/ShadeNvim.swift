@@ -338,7 +338,33 @@ actor ShadeNvim {
         // The template reads context.json (written by ContextGatherer before this call)
         do {
             try await api.command("Obsidian new_from_template capture capture-text")
-            Log.info("ShadeNvim: Created text capture via obsidian.nvim")
+            
+            // Position cursor below frontmatter and enter insert mode
+            // Uses Lua for clean, reliable cursor positioning
+            _ = try await api.execLua("""
+                local lines = vim.api.nvim_buf_get_lines(0, 0, -1, false)
+                local frontmatter_end = nil
+                local in_frontmatter = false
+                
+                for i, line in ipairs(lines) do
+                    if line == '---' then
+                        if not in_frontmatter then
+                            in_frontmatter = true
+                        else
+                            frontmatter_end = i
+                            break
+                        end
+                    end
+                end
+                
+                if frontmatter_end then
+                    -- Go to line after frontmatter, enter insert mode
+                    vim.api.nvim_win_set_cursor(0, {frontmatter_end + 1, 0})
+                    vim.cmd('startinsert')
+                end
+            """)
+            
+            Log.info("ShadeNvim: Created text capture, cursor positioned for input")
             return "text capture created"
         } catch let error as NvimAPI.APIError {
             throw ShadeNvimError.commandFailed(error.localizedDescription)

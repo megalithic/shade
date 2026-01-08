@@ -4,9 +4,15 @@ import AppKit
 /// Behaves like a scratchpad - floats above other windows, doesn't steal focus
 class ShadePanel: NSPanel {
 
+    // MARK: - Properties
+    
+    /// Screen mode for positioning (injected from AppConfig)
+    var screenMode: ScreenMode = .primary
+
     // MARK: - Initialization
 
-    init(contentRect: NSRect) {
+    init(contentRect: NSRect, screenMode: ScreenMode = .primary) {
+        self.screenMode = screenMode
         // Style mask for a floating, non-activating panel
         let styleMask: NSWindow.StyleMask = [
             .titled,
@@ -58,12 +64,18 @@ class ShadePanel: NSPanel {
 
     // MARK: - Positioning
 
-    /// Get the focused screen (where keyboard focus is)
-    /// Falls back to primary if no focused screen
+    /// Get the target screen based on screen mode
+    /// - .primary: Always use primary screen (the one with menu bar)
+    /// - .focused: Use screen with keyboard focus
     private var targetScreen: NSScreen? {
-        // NSScreen.main is the screen containing the window with keyboard focus
-        // Falls back to primary screen (screens[0]) if none focused
-        return NSScreen.main ?? NSScreen.screens.first
+        switch screenMode {
+        case .primary:
+            // Primary screen is always first in the array (the one with menu bar)
+            return NSScreen.screens.first
+        case .focused:
+            // NSScreen.main is the screen containing the window with keyboard focus
+            return NSScreen.main ?? NSScreen.screens.first
+        }
     }
 
     func positionAtTopCenter() {
@@ -134,5 +146,37 @@ class ShadePanel: NSPanel {
         Log.debug("Hide called")
         orderOut(nil)
         Log.debug("Panel hidden")
+    }
+    
+    /// Resize panel to specified dimensions and re-center
+    /// - Parameters:
+    ///   - width: Width as percentage (0.0-1.0) or pixels (> 1.0)
+    ///   - height: Height as percentage (0.0-1.0) or pixels (> 1.0)
+    func resize(width: Double, height: Double) {
+        guard let screen = targetScreen else { return }
+        
+        let screenFrame = screen.visibleFrame
+        
+        let newWidth: CGFloat
+        if width <= 1.0 {
+            newWidth = screenFrame.width * CGFloat(width)
+        } else {
+            newWidth = CGFloat(width)
+        }
+        
+        let newHeight: CGFloat
+        if height <= 1.0 {
+            newHeight = screenFrame.height * CGFloat(height)
+        } else {
+            newHeight = CGFloat(height)
+        }
+        
+        let newSize = NSSize(width: newWidth, height: newHeight)
+        setContentSize(newSize)
+        
+        // Re-center after resize
+        positionCentered()
+        
+        Log.debug("Resized panel to \(Int(newWidth))x\(Int(newHeight))")
     }
 }

@@ -35,6 +35,12 @@ enum Log {
 
 // MARK: - Configuration
 
+/// Screen selection mode for panel positioning
+enum ScreenMode: String {
+    case primary = "primary"   // Always use primary screen (menu bar screen)
+    case focused = "focused"   // Use screen with keyboard focus
+}
+
 /// Configuration for shade, parsed from command-line args
 struct AppConfig {
     /// Width as percentage of screen (0.0-1.0) or absolute pixels if > 1
@@ -49,6 +55,19 @@ struct AppConfig {
     var startHidden: Bool = false
     /// Enable verbose logging
     var verbose: Bool = false
+    /// Screen mode for positioning (primary or focused)
+    var screenMode: ScreenMode = .primary
+    
+    // MARK: - Size presets for different note types
+    
+    /// Daily note panel width (larger for daily notes)
+    var dailyWidth: Double = 0.6
+    /// Daily note panel height
+    var dailyHeight: Double = 0.6
+    /// Capture note panel width (smaller for quick captures)
+    var captureWidth: Double = 0.4
+    /// Capture note panel height
+    var captureHeight: Double = 0.4
 
     static func parse() -> AppConfig {
         var config = AppConfig()
@@ -82,6 +101,33 @@ struct AppConfig {
                 config.startHidden = true
             case "--verbose", "-v":
                 config.verbose = true
+            case "--screen", "-s":
+                if i + 1 < args.count {
+                    if let mode = ScreenMode(rawValue: args[i + 1].lowercased()) {
+                        config.screenMode = mode
+                    }
+                    i += 1
+                }
+            case "--daily-width":
+                if i + 1 < args.count, let val = Double(args[i + 1]) {
+                    config.dailyWidth = val
+                    i += 1
+                }
+            case "--daily-height":
+                if i + 1 < args.count, let val = Double(args[i + 1]) {
+                    config.dailyHeight = val
+                    i += 1
+                }
+            case "--capture-width":
+                if i + 1 < args.count, let val = Double(args[i + 1]) {
+                    config.captureWidth = val
+                    i += 1
+                }
+            case "--capture-height":
+                if i + 1 < args.count, let val = Double(args[i + 1]) {
+                    config.captureHeight = val
+                    i += 1
+                }
             case "--help":
                 printUsage()
                 exit(0)
@@ -106,6 +152,11 @@ struct AppConfig {
           -c, --command <cmd>      Command to run (e.g., "nvim ~/notes/capture.md")
           -d, --working-directory  Working directory
           --hidden                 Start hidden (wait for toggle signal)
+          -s, --screen <mode>      Screen for positioning: primary (default), focused
+          --daily-width <value>    Daily note panel width (default: 0.6)
+          --daily-height <value>   Daily note panel height (default: 0.6)
+          --capture-width <value>  Capture panel width (default: 0.4)
+          --capture-height <value> Capture panel height (default: 0.4)
           -v, --verbose            Enable verbose logging
           --help                   Show this help
 
