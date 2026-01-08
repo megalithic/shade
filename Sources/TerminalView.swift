@@ -201,9 +201,11 @@ class TerminalView: NSView {
             keyEvent.unshifted_codepoint = codepoint.value
         }
 
-        // Set text if available
-        if let chars = event.characters {
-            chars.withCString { cstr in
+        // Get text to send, filtering out special cases
+        let textToSend = ghosttyCharacters(for: event)
+        
+        if let text = textToSend {
+            text.withCString { cstr in
                 keyEvent.text = cstr
                 keyEvent.composing = false
                 _ = ghostty_surface_key(surface, keyEvent)
@@ -213,6 +215,32 @@ class TerminalView: NSView {
             keyEvent.composing = false
             _ = ghostty_surface_key(surface, keyEvent)
         }
+    }
+    
+    /// Returns the text to set for a key event for Ghostty.
+    ///
+    /// This filters out special cases:
+    /// - Control characters (< 0x20): Ghostty handles these internally via KeyEncoder
+    /// - Private Use Area (0xF700-0xF8FF): Function keys like forward delete, arrows, etc.
+    ///   These should be encoded by keycode, not as text.
+    private func ghosttyCharacters(for event: NSEvent) -> String? {
+        guard let characters = event.characters else { return nil }
+        
+        if characters.count == 1,
+           let scalar = characters.unicodeScalars.first {
+            // Control characters - Ghostty handles these internally
+            if scalar.value < 0x20 {
+                return event.characters(byApplyingModifiers: event.modifierFlags.subtracting(.control))
+            }
+            
+            // Private Use Area - function keys (forward delete, arrows, F1-F12, etc.)
+            // These should not be sent as text; libghostty handles them via keycode
+            if scalar.value >= 0xF700 && scalar.value <= 0xF8FF {
+                return nil
+            }
+        }
+        
+        return characters
     }
 
     override func keyUp(with event: NSEvent) {
