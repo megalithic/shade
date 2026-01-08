@@ -208,6 +208,7 @@ class ShadeAppDelegate: NSObject, NSApplicationDelegate {
         Log.debug("IPC: note.capture")
 
         // Read context from context.json (written by Hammerspoon)
+        // TODO: Context gathering will move to Shade in future task
         let context = StateDirectory.readContext()
         if let ctx = context {
             Log.debug("Capture context: \(ctx.appType ?? "unknown") from \(ctx.appName ?? "unknown")")
@@ -228,15 +229,12 @@ class ShadeAppDelegate: NSObject, NSApplicationDelegate {
         // Show panel with surface (will recreate if backgrounded)
         showPanelWithSurface()
 
-        // After surface is ready, open a new capture file
-        // Use a small delay to ensure nvim has started
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
-            if NvimRPC.isServerRunning() {
-                _ = NvimRPC.openNewCapture(context: context)
-            } else {
-                Log.debug("Nvim server not ready yet, file will open on next capture")
-            }
-        }
+        // Open capture using native RPC (auto-connects with retry)
+        ShadeNvim.shared.connectAndPerform(
+            { nvim in try await nvim.openNewCapture(context: context) },
+            onSuccess: { path in Log.debug("Capture opened: \(path)") },
+            onError: { error in Log.error("Failed to open capture: \(error)") }
+        )
     }
 
     @objc private func handleDailyNoteNotification(_ notification: Notification) {
@@ -245,14 +243,12 @@ class ShadeAppDelegate: NSObject, NSApplicationDelegate {
         // Show panel with surface (will recreate if backgrounded)
         showPanelWithSurface()
 
-        // After surface is ready, open today's daily note
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
-            if NvimRPC.isServerRunning() {
-                _ = NvimRPC.openDailyNote()
-            } else {
-                Log.debug("Nvim server not ready yet, daily note will open on next request")
-            }
-        }
+        // Open daily note using native RPC (auto-connects with retry)
+        ShadeNvim.shared.connectAndPerform(
+            { nvim in try await nvim.openDailyNote() },
+            onSuccess: { path in Log.debug("Daily note opened: \(path)") },
+            onError: { error in Log.error("Failed to open daily note: \(error)") }
+        )
     }
 
     func applicationWillTerminate(_ notification: Notification) {
@@ -261,6 +257,11 @@ class ShadeAppDelegate: NSObject, NSApplicationDelegate {
         // Stop the timer
         tickTimer?.invalidate()
         tickTimer = nil
+
+        // Disconnect from nvim
+        Task {
+            await ShadeNvim.shared.disconnect()
+        }
 
         // Clean up ghostty
         if let app = ghosttyApp {

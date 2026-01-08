@@ -1,5 +1,6 @@
 import Foundation
 @preconcurrency import MessagePack
+import MsgpackRpc
 
 /// Nvim event subscription and routing system.
 ///

@@ -81,18 +81,30 @@ let package = Package(
         .macOS(.v13)
     ],
     products: [
-        .executable(name: "shade", targets: ["shade"])
+        .executable(name: "shade", targets: ["shade"]),
+        .library(name: "MsgpackRpc", targets: ["MsgpackRpc"]),
     ],
     dependencies: [
         .package(url: "https://github.com/a2/MessagePack.swift.git", from: "4.0.0"),
     ],
     targets: [
-        .executableTarget(
-            name: "shade",
+        // Pure msgpack-rpc protocol library (no GhosttyKit dependency)
+        .target(
+            name: "MsgpackRpc",
             dependencies: [
                 .product(name: "MessagePack", package: "MessagePack.swift"),
             ],
+            path: "Sources/MsgpackRpc"
+        ),
+        // Main executable with GhosttyKit
+        .executableTarget(
+            name: "shade",
+            dependencies: [
+                "MsgpackRpc",
+                .product(name: "MessagePack", package: "MessagePack.swift"),
+            ],
             path: "Sources",
+            exclude: ["MsgpackRpc"],
             swiftSettings: [
                 // Import path for GhosttyKit module
                 .unsafeFlags([
@@ -120,6 +132,15 @@ let package = Package(
                 // Link C++ standard library (required by Zig builds)
                 .linkedLibrary("c++"),
             ]
-        )
+        ),
+        // Tests for MsgpackRpc protocol
+        .testTarget(
+            name: "MsgpackRpcTests",
+            dependencies: [
+                "MsgpackRpc",
+                .product(name: "MessagePack", package: "MessagePack.swift"),
+            ],
+            path: "Tests/MsgpackRpcTests"
+        ),
     ]
 )

@@ -9,32 +9,38 @@ import Foundation
 /// - Request:      [0, msgid, method, params]
 /// - Response:     [1, msgid, error, result]
 /// - Notification: [2, method, params]
-enum MsgpackRpc {
+public enum MsgpackRpc {
     
     // MARK: - Message Types
     
     /// Message type identifiers per msgpack-rpc spec
-    enum MessageType: UInt64 {
+    public enum MessageType: UInt64 {
         case request = 0
         case response = 1
         case notification = 2
     }
     
     /// A parsed msgpack-rpc message
-    enum Message: Sendable {
+    public enum Message: Sendable {
         case request(Request)
         case response(Response)
         case notification(Notification)
     }
     
     /// Request message: client -> server
-    struct Request: Sendable {
-        let msgid: UInt32
-        let method: String
-        let params: [MessagePackValue]
+    public struct Request: Sendable {
+        public let msgid: UInt32
+        public let method: String
+        public let params: [MessagePackValue]
+        
+        public init(msgid: UInt32, method: String, params: [MessagePackValue]) {
+            self.msgid = msgid
+            self.method = method
+            self.params = params
+        }
         
         /// Encode to msgpack data
-        func encode() -> Data {
+        public func encode() -> Data {
             let message: MessagePackValue = .array([
                 .uint(UInt64(MessageType.request.rawValue)),
                 .uint(UInt64(msgid)),
@@ -46,21 +52,27 @@ enum MsgpackRpc {
     }
     
     /// Response message: server -> client
-    struct Response: Sendable {
-        let msgid: UInt32
-        let error: MessagePackValue
-        let result: MessagePackValue
+    public struct Response: Sendable {
+        public let msgid: UInt32
+        public let error: MessagePackValue
+        public let result: MessagePackValue
         
-        var isSuccess: Bool { error.isNil }
-        var isError: Bool { !isSuccess }
+        public var isSuccess: Bool { error.isNil }
+        public var isError: Bool { !isSuccess }
+        
+        public init(msgid: UInt32, error: MessagePackValue, result: MessagePackValue) {
+            self.msgid = msgid
+            self.error = error
+            self.result = result
+        }
         
         /// Create an empty/nil response (used for timeouts, cancellation)
-        static func empty(_ msgid: UInt32) -> Response {
+        public static func empty(_ msgid: UInt32) -> Response {
             Response(msgid: msgid, error: .nil, result: .nil)
         }
         
         /// Encode to msgpack data (for sending responses to nvim requests)
-        func encode() -> Data {
+        public func encode() -> Data {
             let message: MessagePackValue = .array([
                 .uint(UInt64(MessageType.response.rawValue)),
                 .uint(UInt64(msgid)),
@@ -72,12 +84,17 @@ enum MsgpackRpc {
     }
     
     /// Notification message: either direction, no response expected
-    struct Notification: Sendable {
-        let method: String
-        let params: [MessagePackValue]
+    public struct Notification: Sendable {
+        public let method: String
+        public let params: [MessagePackValue]
+        
+        public init(method: String, params: [MessagePackValue]) {
+            self.method = method
+            self.params = params
+        }
         
         /// Encode to msgpack data
-        func encode() -> Data {
+        public func encode() -> Data {
             let message: MessagePackValue = .array([
                 .uint(UInt64(MessageType.notification.rawValue)),
                 .string(method),
@@ -90,7 +107,7 @@ enum MsgpackRpc {
     // MARK: - Decoding
     
     /// Errors during message decoding
-    enum DecodeError: Error, LocalizedError {
+    public enum DecodeError: Error, LocalizedError {
         case notAnArray
         case emptyArray
         case invalidMessageType(UInt64)
@@ -98,7 +115,7 @@ enum MsgpackRpc {
         case malformedResponse(String)
         case malformedNotification(String)
         
-        var errorDescription: String? {
+        public var errorDescription: String? {
             switch self {
             case .notAnArray:
                 return "Message is not an array"
@@ -120,7 +137,7 @@ enum MsgpackRpc {
     /// - Parameter value: The unpacked msgpack value
     /// - Returns: A typed Message
     /// - Throws: DecodeError if the message format is invalid
-    static func decode(_ value: MessagePackValue) throws -> Message {
+    public static func decode(_ value: MessagePackValue) throws -> Message {
         guard let array = value.arrayValue else {
             throw DecodeError.notAnArray
         }
@@ -205,19 +222,25 @@ enum MsgpackRpc {
     // MARK: - Stream Decoding
     
     /// Result of attempting to decode from a data buffer
-    struct DecodeResult {
+    public struct DecodeResult {
         /// Successfully decoded messages
-        let messages: [Message]
+        public let messages: [Message]
         /// Remaining data (incomplete message)
-        let remainder: Data
+        public let remainder: Data
         /// Any decode errors encountered (non-fatal, logged)
-        let errors: [Error]
+        public let errors: [Error]
+        
+        public init(messages: [Message], remainder: Data, errors: [Error]) {
+            self.messages = messages
+            self.remainder = remainder
+            self.errors = errors
+        }
     }
     
     /// Decode all complete messages from a data buffer
     /// - Parameter data: Raw data buffer (may contain multiple messages or partial messages)
     /// - Returns: Decoded messages and any remaining data
-    static func decodeAll(from data: Data) -> DecodeResult {
+    public static func decodeAll(from data: Data) -> DecodeResult {
         var messages: [Message] = []
         var errors: [Error] = []
         var remainder = data
@@ -253,27 +276,27 @@ enum MsgpackRpc {
 
 extension MsgpackRpc.Response {
     /// Extract result as a string, if possible
-    var stringResult: String? {
+    public var stringResult: String? {
         result.stringValue
     }
     
     /// Extract result as an integer, if possible
-    var intResult: Int64? {
+    public var intResult: Int64? {
         result.int64Value
     }
     
     /// Extract result as a boolean, if possible
-    var boolResult: Bool? {
+    public var boolResult: Bool? {
         result.boolValue
     }
     
     /// Extract result as an array, if possible
-    var arrayResult: [MessagePackValue]? {
+    public var arrayResult: [MessagePackValue]? {
         result.arrayValue
     }
     
     /// Extract error message as a string, if present
-    var errorMessage: String? {
+    public var errorMessage: String? {
         if isError {
             // nvim errors are typically [type, message] arrays
             if let arr = error.arrayValue, arr.count >= 2 {

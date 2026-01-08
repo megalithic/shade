@@ -1,5 +1,6 @@
 import Foundation
 @preconcurrency import MessagePack
+import MsgpackRpc
 
 /// Native Unix socket connection manager for nvim msgpack-rpc communication.
 /// This is Option B: persistent socket connection (vs Option A: shell out per command in NvimRPC.swift)
@@ -69,6 +70,9 @@ actor NvimSocketManager {
     /// Buffer for incoming data (partial reads)
     private var readBuffer = Data()
     
+    /// Maximum read buffer size (16MB) - protects against memory exhaustion
+    private let maxReadBufferSize = 16 * 1024 * 1024
+    
     /// Next msgid for requests
     private var nextMsgid: UInt32 = 1
     
@@ -80,7 +84,20 @@ actor NvimSocketManager {
     private let messageContinuation: AsyncStream<Message>.Continuation
     
     /// Callback for state changes
-    var onStateChange: ((ConnectionState) -> Void)?
+    private var onStateChange: (@Sendable (ConnectionState) -> Void)?
+    
+    /// Callback for disconnection (for auto-reconnect logic)
+    private var onDisconnect: (@Sendable () -> Void)?
+    
+    /// Set state change callback
+    func setOnStateChange(_ callback: (@Sendable (ConnectionState) -> Void)?) {
+        onStateChange = callback
+    }
+    
+    /// Set disconnection callback
+    func setOnDisconnect(_ callback: (@Sendable () -> Void)?) {
+        onDisconnect = callback
+    }
     
     // MARK: - Initialization
     
@@ -182,8 +199,8 @@ actor NvimSocketManager {
             socketFD = nil
         }
         
-        // Clear buffers
-        readBuffer.removeAll()
+        // Clear buffers and release memory
+        readBuffer.removeAll(keepingCapacity: false)
         
         // Cancel pending requests
         for (msgid, continuation) in pendingRequests {
@@ -196,6 +213,9 @@ actor NvimSocketManager {
         
         setState(.disconnected)
         Log.info("NvimSocketManager: Disconnected")
+        
+        // Notify for auto-reconnect logic
+        onDisconnect?()
     }
     
     /// Check if connected
@@ -233,21 +253,27 @@ actor NvimSocketManager {
         try writeData(data, to: fd)
         
         // Wait for response with timeout
-        return try await withThrowingTaskGroup(of: Response.self) { group in
-            group.addTask {
-                try await withCheckedThrowingContinuation { continuation in
-                    Task { await self.storeContinuation(continuation, for: msgid) }
+        do {
+            return try await withThrowingTaskGroup(of: Response.self) { group in
+                group.addTask {
+                    try await withCheckedThrowingContinuation { continuation in
+                        Task { await self.storeContinuation(continuation, for: msgid) }
+                    }
                 }
+                
+                group.addTask {
+                    try await Task.sleep(nanoseconds: UInt64(timeout * 1_000_000_000))
+                    throw SocketError.timeout
+                }
+                
+                let result = try await group.next()!
+                group.cancelAll()
+                return result
             }
-            
-            group.addTask {
-                try await Task.sleep(nanoseconds: UInt64(timeout * 1_000_000_000))
-                throw SocketError.timeout
-            }
-            
-            let result = try await group.next()!
-            group.cancelAll()
-            return result
+        } catch {
+            // Clean up pending request on timeout or cancellation
+            await removePendingRequest(for: msgid)
+            throw error
         }
     }
     
@@ -296,6 +322,10 @@ actor NvimSocketManager {
     
     private func storeContinuation(_ continuation: CheckedContinuation<Response, Error>, for msgid: UInt32) {
         pendingRequests[msgid] = continuation
+    }
+    
+    private func removePendingRequest(for msgid: UInt32) {
+        pendingRequests.removeValue(forKey: msgid)
     }
     
     /// Wait for non-blocking connect to complete
@@ -369,6 +399,13 @@ actor NvimSocketManager {
     private func handleIncomingData(_ data: Data) {
         readBuffer.append(data)
         
+        // Protect against memory exhaustion from malformed data
+        if readBuffer.count > maxReadBufferSize {
+            Log.error("NvimSocketManager: Read buffer exceeded \(maxReadBufferSize) bytes, clearing")
+            readBuffer.removeAll(keepingCapacity: false)
+            return
+        }
+        
         // Use MsgpackRpc to decode all complete messages
         let result = MsgpackRpc.decodeAll(from: readBuffer)
         readBuffer = result.remainder
@@ -407,20 +444,26 @@ actor NvimSocketManager {
     /// Write data to socket
     private func writeData(_ data: Data, to fd: Int32) throws {
         var totalWritten = 0
-        let bytes = [UInt8](data)
         
-        while totalWritten < bytes.count {
-            let written = write(fd, bytes, bytes.count - totalWritten)
+        try data.withUnsafeBytes { (bufferPointer: UnsafeRawBufferPointer) in
+            guard let baseAddress = bufferPointer.baseAddress else { return }
             
-            if written < 0 {
-                if errno == EAGAIN || errno == EWOULDBLOCK {
-                    // Would block, try again
-                    continue
+            while totalWritten < data.count {
+                let remaining = data.count - totalWritten
+                let writePtr = baseAddress.advanced(by: totalWritten)
+                let written = write(fd, writePtr, remaining)
+                
+                if written < 0 {
+                    if errno == EAGAIN || errno == EWOULDBLOCK {
+                        // Would block, try again (with small delay to avoid spin)
+                        usleep(1000) // 1ms
+                        continue
+                    }
+                    throw SocketError.writeFailed(String(cString: strerror(errno)))
                 }
-                throw SocketError.writeFailed(String(cString: strerror(errno)))
+                
+                totalWritten += written
             }
-            
-            totalWritten += written
         }
     }
 }
