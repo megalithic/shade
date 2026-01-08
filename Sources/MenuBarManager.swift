@@ -3,12 +3,13 @@ import AppKit
 /// Manages the menubar status item with connection state indicators.
 ///
 /// ## Icon States
-/// - **Disconnected**: Outline pin (template) - Shade running, nvim not connected
-/// - **Connected**: Filled pin with muted green tint - Connected to nvim
-/// - **Editing Notes**: Filled pin with muted aqua tint - Editing in $NOTES_HOME
+/// - **Disconnected**: Ghost outline (template) - Shade running, nvim not connected
+/// - **Connected**: Filled ghost with muted green tint - Connected to nvim
+/// - **Editing Notes**: Filled ghost with muted aqua tint - Editing in $NOTES_HOME
 /// - **Modified**: Same as above + small orange dot - Unsaved changes
 ///
-/// Uses Everforest-inspired muted colors that work in both light and dark mode.
+/// Uses a "shade" ghost icon (thinner/lighter than Ghostty's ghost) from Phosphor Icons.
+/// Everforest-inspired muted colors that work in both light and dark mode.
 @MainActor
 final class MenuBarManager {
     
@@ -159,93 +160,81 @@ final class MenuBarManager {
     private func updateIcon(for state: IconState) {
         guard let button = statusItem?.button else { return }
         
-        // Base symbol - rotated 45 degrees
-        let symbolName: String
+        let filled: Bool
         let tintColor: NSColor?
         let showBadge: Bool
         
         switch state {
         case .disconnected:
-            symbolName = "pin"
+            filled = false
             tintColor = nil // Use template (adapts to light/dark)
             showBadge = false
             
         case .connected:
-            symbolName = "pin.fill"
+            filled = true
             tintColor = Colors.connected
             showBadge = false
             
         case .editingNotes:
-            symbolName = "pin.fill"
+            filled = true
             tintColor = Colors.editingNotes
             showBadge = false
             
         case .modified:
-            symbolName = "pin.fill"
+            filled = true
             tintColor = Colors.editingNotes
             showBadge = true
         }
         
-        // Create the icon
-        if let image = createIcon(symbolName: symbolName, tintColor: tintColor, showBadge: showBadge) {
-            button.image = image
-        }
+        // Create the ghost icon
+        button.image = createGhostIcon(filled: filled, tintColor: tintColor, showBadge: showBadge)
         
         // Update status text in menu
         updateStatusText(for: state)
     }
     
-    private func createIcon(symbolName: String, tintColor: NSColor?, showBadge: Bool) -> NSImage? {
-        // Get the SF Symbol
-        guard let baseImage = NSImage(systemSymbolName: symbolName, accessibilityDescription: "Shade") else {
-            Log.error("MenuBarManager: Failed to load SF Symbol '\(symbolName)'")
-            return nil
-        }
-        
-        // Configure for menubar size
-        let config = NSImage.SymbolConfiguration(pointSize: 14, weight: .medium)
-        guard let configuredImage = baseImage.withSymbolConfiguration(config) else {
-            return baseImage
-        }
-        
-        // Create a new image to draw into (for rotation and badge)
+    /// Create the ghost "shade" icon
+    /// Uses Phosphor Icons "ghost-thin" - a lighter, more ethereal ghost than Ghostty's
+    private func createGhostIcon(filled: Bool, tintColor: NSColor?, showBadge: Bool) -> NSImage {
         let size = NSSize(width: 18, height: 18)
-        let finalImage = NSImage(size: size, flipped: false) { rect in
+        
+        let image = NSImage(size: size, flipped: false) { rect in
             NSGraphicsContext.current?.imageInterpolation = .high
             
-            // Save graphics state
-            NSGraphicsContext.saveGraphicsState()
+            // The ghost path from Phosphor thin variant (viewBox 0 0 256 256)
+            // Scaled to fit in 18x18 with some padding
+            let scale: CGFloat = 16.0 / 256.0  // Scale to ~16pt within 18pt frame
+            let offsetX: CGFloat = (rect.width - 256 * scale) / 2
+            let offsetY: CGFloat = (rect.height - 256 * scale) / 2
             
-            // Move origin to center, rotate 45 degrees, move back
             let transform = NSAffineTransform()
-            transform.translateX(by: rect.width / 2, yBy: rect.height / 2)
-            transform.rotate(byDegrees: 45)
-            transform.translateX(by: -rect.width / 2, yBy: -rect.height / 2)
-            transform.concat()
+            transform.translateX(by: offsetX, yBy: offsetY)
+            transform.scale(by: scale)
             
-            // Draw the symbol
-            let imageRect = NSRect(
-                x: (rect.width - configuredImage.size.width) / 2,
-                y: (rect.height - configuredImage.size.height) / 2,
-                width: configuredImage.size.width,
-                height: configuredImage.size.height
-            )
+            // Create the ghost path
+            let ghostPath = NSBezierPath()
             
-            if let tintColor = tintColor {
-                // Draw tinted (non-template)
-                let tintedImage = configuredImage.tinted(with: tintColor)
-                tintedImage.draw(in: imageRect)
+            if filled {
+                // Filled ghost - outer shape only
+                self.addFilledGhostPath(to: ghostPath)
             } else {
-                // Draw as template (adapts to menubar appearance)
-                configuredImage.draw(in: imageRect)
+                // Outline ghost - the thin stroke version
+                self.addOutlineGhostPath(to: ghostPath)
             }
             
-            // Restore graphics state (removes rotation for badge)
-            NSGraphicsContext.restoreGraphicsState()
+            ghostPath.transform(using: transform as AffineTransform)
             
-            // Draw badge if needed (not rotated)
+            // Draw the ghost
+            if let color = tintColor {
+                color.setFill()
+            } else {
+                NSColor.black.setFill()  // Will be templated
+            }
+            ghostPath.fill()
+            
+            // Draw badge if needed
             if showBadge {
-                let badgeSize: CGFloat = 6
+                let badgeSize: CGFloat = 5
                 let badgeRect = NSRect(
                     x: rect.width - badgeSize - 1,
                     y: rect.height - badgeSize - 1,
@@ -253,9 +242,9 @@ final class MenuBarManager {
                     height: badgeSize
                 )
                 
-                // Badge background (slightly darker for contrast)
+                // Badge background for contrast
                 NSColor.black.withAlphaComponent(0.3).setFill()
-                NSBezierPath(ovalIn: badgeRect.insetBy(dx: -1, dy: -1)).fill()
+                NSBezierPath(ovalIn: badgeRect.insetBy(dx: -0.5, dy: -0.5)).fill()
                 
                 // Badge dot
                 Colors.modified.setFill()
@@ -265,10 +254,114 @@ final class MenuBarManager {
             return true
         }
         
-        // Set as template only for disconnected state (no tint)
-        finalImage.isTemplate = (tintColor == nil)
+        // Template for disconnected state (auto light/dark)
+        image.isTemplate = (tintColor == nil)
         
-        return finalImage
+        return image
+    }
+    
+    /// Add the filled ghost shape (solid silhouette)
+    private func addFilledGhostPath(to path: NSBezierPath) {
+        // Ghost body - outer contour
+        // Top arc (head) - 92pt radius circle centered at (128, 120)
+        // Note: NSBezierPath Y is flipped from SVG
+        
+        // Start at bottom left tail point
+        path.move(to: NSPoint(x: 36, y: 256 - 216))
+        
+        // Left edge up to the arc
+        path.line(to: NSPoint(x: 36, y: 256 - 120))
+        
+        // The head arc (92pt radius)
+        path.appendArc(withCenter: NSPoint(x: 128, y: 256 - 120),
+                       radius: 92,
+                       startAngle: 180,
+                       endAngle: 0,
+                       clockwise: true)
+        
+        // Right edge down
+        path.line(to: NSPoint(x: 220, y: 256 - 216))
+        
+        // Bottom wavy tail (simplified)
+        // The ghost has 3 "waves" at the bottom
+        path.line(to: NSPoint(x: 186.67, y: 256 - 197.17))
+        path.line(to: NSPoint(x: 159.87, y: 256 - 219.1))
+        path.line(to: NSPoint(x: 128, y: 256 - 197.17))
+        path.line(to: NSPoint(x: 96.13, y: 256 - 219.1))
+        path.line(to: NSPoint(x: 69.33, y: 256 - 197.17))
+        path.line(to: NSPoint(x: 36, y: 256 - 216))
+        
+        path.close()
+        
+        // Eyes (subtract them by drawing in opposite direction - or just skip for filled)
+        // For a true "filled" look, we'll add the eyes as separate unfilled areas
+        // Actually, let's keep eyes as part of the design
+        addEyePaths(to: path)
+    }
+    
+    /// Add the outline ghost shape (thin stroke look, rendered as fill)
+    private func addOutlineGhostPath(to path: NSBezierPath) {
+        // For the outline version, we draw the stroke path
+        // This is the Phosphor thin ghost path data (stroke width ~8pt in original 256x256 viewBox)
+        
+        // Outer edge
+        let outer = NSBezierPath()
+        outer.move(to: NSPoint(x: 36, y: 256 - 216))
+        outer.line(to: NSPoint(x: 36, y: 256 - 120))
+        outer.appendArc(withCenter: NSPoint(x: 128, y: 256 - 120),
+                        radius: 92,
+                        startAngle: 180,
+                        endAngle: 0,
+                        clockwise: true)
+        outer.line(to: NSPoint(x: 220, y: 256 - 216))
+        outer.line(to: NSPoint(x: 186.67, y: 256 - 197.17))
+        outer.line(to: NSPoint(x: 159.87, y: 256 - 219.1))
+        outer.line(to: NSPoint(x: 128, y: 256 - 197.17))
+        outer.line(to: NSPoint(x: 96.13, y: 256 - 219.1))
+        outer.line(to: NSPoint(x: 69.33, y: 256 - 197.17))
+        outer.close()
+        
+        // Inner edge (offset inward)
+        let inner = NSBezierPath()
+        inner.move(to: NSPoint(x: 44, y: 256 - 207.56))
+        inner.line(to: NSPoint(x: 44, y: 256 - 120))
+        inner.appendArc(withCenter: NSPoint(x: 128, y: 256 - 120),
+                        radius: 84,
+                        startAngle: 180,
+                        endAngle: 0,
+                        clockwise: true)
+        inner.line(to: NSPoint(x: 212, y: 256 - 207.56))
+        inner.line(to: NSPoint(x: 186.67, y: 256 - 188.9))
+        inner.line(to: NSPoint(x: 159.87, y: 256 - 210.83))
+        inner.line(to: NSPoint(x: 128, y: 256 - 188.9))
+        inner.line(to: NSPoint(x: 96.13, y: 256 - 210.83))
+        inner.line(to: NSPoint(x: 69.33, y: 256 - 188.9))
+        inner.close()
+        
+        // Use even-odd rule to create the outline effect
+        path.append(outer)
+        path.append(inner.reversed)
+        path.windingRule = .evenOdd
+        
+        // Add eyes
+        addEyePaths(to: path)
+    }
+    
+    /// Add the eye circles to the ghost
+    private func addEyePaths(to path: NSBezierPath) {
+        // Left eye - circle at (100, 116) with radius 8
+        let leftEye = NSBezierPath(ovalIn: NSRect(
+            x: 100 - 8, y: 256 - 116 - 8,
+            width: 16, height: 16
+        ))
+        path.append(leftEye)
+        
+        // Right eye - circle at (156, 116) with radius 8  
+        let rightEye = NSBezierPath(ovalIn: NSRect(
+            x: 156 - 8, y: 256 - 116 - 8,
+            width: 16, height: 16
+        ))
+        path.append(rightEye)
     }
     
     private func updateStatusText(for state: IconState) {
