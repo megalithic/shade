@@ -34,6 +34,12 @@ class ShadeAppDelegate: NSObject, NSApplicationDelegate {
     /// Flag to track if we're in backgrounded state (surface destroyed, awaiting new command)
     private var isBackgrounded = false
 
+    /// Menubar status item manager
+    private var menuBarManager: MenuBarManager?
+
+    /// Task for monitoring nvim state changes
+    private var stateMonitorTask: Task<Void, Never>?
+
     // MARK: - Initialization
 
     init(config: AppConfig) {
@@ -77,6 +83,9 @@ class ShadeAppDelegate: NSObject, NSApplicationDelegate {
         // Listen for toggle notifications from Hammerspoon
         setupNotificationListener()
 
+        // Setup menubar status item
+        setupMenuBarItem()
+
         Log.debug("Ready")
         Log.debug("State directory: \(StateDirectory.baseDir.path)")
     }
@@ -105,6 +114,101 @@ class ShadeAppDelegate: NSObject, NSApplicationDelegate {
 
         NSApp.mainMenu = mainMenu
         Log.debug("Menu bar configured (Cmd+Q enabled)")
+    }
+
+    // MARK: - Menubar Status Item
+
+    private func setupMenuBarItem() {
+        // Setup on main actor since MenuBarManager is @MainActor
+        Task { @MainActor [weak self] in
+            guard let self = self else { return }
+            
+            let manager = MenuBarManager()
+            self.menuBarManager = manager
+
+            // Wire up actions
+            manager.onToggle = { [weak self] in
+                if self?.isPanelVisible == true {
+                    self?.hidePanel()
+                } else {
+                    self?.showPanelWithSurface()
+                }
+            }
+
+            manager.onDailyNote = { [weak self] in
+                self?.showPanelWithSurface()
+                ShadeNvim.shared.connectAndPerform(
+                    { nvim in try await nvim.openDailyNote() },
+                    onSuccess: { _ in },
+                    onError: { error in Log.error("Failed to open daily note: \(error)") }
+                )
+            }
+
+            manager.onNewCapture = { [weak self] in
+                self?.showPanelWithSurface()
+                ShadeNvim.shared.connectAndPerform(
+                    { nvim in try await nvim.openNewCapture() },
+                    onSuccess: { _ in },
+                    onError: { error in Log.error("Failed to open capture: \(error)") }
+                )
+            }
+
+            manager.onQuit = {
+                NSApp.terminate(nil)
+            }
+
+            manager.setup()
+        }
+
+        // Start monitoring nvim state for icon updates
+        startStateMonitoring()
+    }
+
+    private func startStateMonitoring() {
+        stateMonitorTask = Task {
+            // Poll nvim state periodically to update menubar icon
+            // A more elegant solution would use proper state observation,
+            // but this works for now and is simple
+            while !Task.isCancelled {
+                await updateMenuBarState()
+                try? await Task.sleep(nanoseconds: 1_000_000_000) // 1 second
+            }
+        }
+    }
+
+    @MainActor
+    private func updateMenuBarState() async {
+        guard let manager = menuBarManager else { return }
+
+        let isConnected = await ShadeNvim.shared.isConnected
+
+        if !isConnected {
+            manager.setState(.disconnected)
+            return
+        }
+
+        // Check if we're editing notes and if modified
+        do {
+            let currentFile = try await ShadeNvim.shared.getCurrentFile()
+            let notesHome = ProcessInfo.processInfo.environment["NOTES_HOME"]
+                ?? "\(NSHomeDirectory())/notes"
+
+            let isInNotes = currentFile.hasPrefix(notesHome)
+
+            if isInNotes {
+                let hasChanges = try await ShadeNvim.shared.hasUnsavedChanges()
+                if hasChanges {
+                    manager.setState(.modified)
+                } else {
+                    manager.setState(.editingNotes)
+                }
+            } else {
+                manager.setState(.connected)
+            }
+        } catch {
+            // If we can't query, assume just connected
+            manager.setState(.connected)
+        }
     }
 
     // MARK: - Emergency Hotkey (Cmd+Escape)
@@ -253,6 +357,14 @@ class ShadeAppDelegate: NSObject, NSApplicationDelegate {
 
     func applicationWillTerminate(_ notification: Notification) {
         Log.debug("Shutting down...")
+
+        // Stop state monitoring
+        stateMonitorTask?.cancel()
+        stateMonitorTask = nil
+
+        // Remove menubar item
+        menuBarManager?.teardown()
+        menuBarManager = nil
 
         // Stop the timer
         tickTimer?.invalidate()
