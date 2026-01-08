@@ -371,16 +371,8 @@ class ShadeAppDelegate: NSObject, NSApplicationDelegate {
     @objc private func handleNoteCaptureNotification(_ notification: Notification) {
         Log.debug("IPC: note.capture")
 
-        // If already showing and has active surface, just focus
-        // (don't create a new capture when already in capture mode)
-        if isPanelVisible && !isBackgrounded {
-            Log.debug("Already visible with active surface, focusing")
-            panel?.makeKeyAndOrderFront(nil)
-            NSApp.activate(ignoringOtherApps: true)
-            return
-        }
-
-        // Gather context natively (this is the new flow - Shade gathers its own context)
+        // Always create a new capture, even if panel is already visible
+        // User explicitly requested a capture, so honor that intent
         Task {
             let gatheredContext = await ContextGatherer.shared.gather()
             Log.debug("Gathered context: \(gatheredContext.appType ?? "unknown") from \(gatheredContext.appName ?? "unknown")")
