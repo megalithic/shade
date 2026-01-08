@@ -1,4 +1,5 @@
 import Foundation
+import ContextGatherer
 
 /// Manages XDG-compliant state directories for shade
 /// Uses ~/.local/state/shade/ for runtime state files
@@ -127,13 +128,54 @@ enum StateDirectory {
             }
         }
     }
+
+    /// Write gathered context to JSON file
+    /// Called by Shade after gathering context natively
+    /// - Parameter context: The gathered context to write
+    /// - Returns: true if successful
+    @discardableResult
+    static func writeContext(_ context: GatheredContext) -> Bool {
+        ensureDirectoryExists()
+
+        do {
+            let encoder = JSONEncoder()
+            encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+            let data = try encoder.encode(context)
+            try data.write(to: contextFile, options: .atomic)
+            Log.debug("Wrote context: \(context.appType ?? "unknown") - \(context.appName ?? "unknown")")
+            return true
+        } catch {
+            Log.error("Failed to write context file: \(error)")
+            return false
+        }
+    }
+
+    /// Read gathered context from JSON file (new format)
+    /// Returns nil if file doesn't exist or can't be parsed
+    static func readGatheredContext() -> GatheredContext? {
+        let fileManager = FileManager.default
+        guard fileManager.fileExists(atPath: contextFile.path) else {
+            Log.debug("No context file found")
+            return nil
+        }
+
+        do {
+            let data = try Data(contentsOf: contextFile)
+            let context = try JSONDecoder().decode(GatheredContext.self, from: data)
+            Log.debug("Read gathered context: \(context.appType ?? "unknown") - \(context.appName ?? "unknown")")
+            return context
+        } catch {
+            Log.error("Failed to read context file: \(error)")
+            return nil
+        }
+    }
 }
 
 // MARK: - Capture Context
 
 /// Context passed from Hammerspoon for quick capture
 struct CaptureContext: Codable {
-    var appType: String?         // "browser", "terminal", "neovim", "other"
+    var appType: String?         // "browser", "terminal", "neovim", "screenshot", "other"
     var appName: String?         // "Brave Browser", etc.
     var windowTitle: String?     // Window title
     var url: String?             // URL if browser
@@ -141,6 +183,7 @@ struct CaptureContext: Codable {
     var selection: String?       // Selected text
     var detectedLanguage: String? // Detected language for code
     var timestamp: String?       // ISO8601 timestamp
+    var imageFilename: String?   // Image filename for clipper captures (e.g., "20260108-123456.png")
 
     enum CodingKeys: String, CodingKey {
         case appType = "appType"
@@ -151,5 +194,11 @@ struct CaptureContext: Codable {
         case selection = "selection"
         case detectedLanguage = "detectedLanguage"
         case timestamp = "timestamp"
+        case imageFilename = "imageFilename"
+    }
+
+    /// Whether this is an image capture (from clipper)
+    var isImageCapture: Bool {
+        imageFilename != nil
     }
 }

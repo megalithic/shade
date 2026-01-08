@@ -1,4 +1,5 @@
 import AppKit
+import ContextGatherer
 import GhosttyKit
 
 /// Main application delegate that manages the ghostty app and terminal panel
@@ -280,6 +281,14 @@ class ShadeAppDelegate: NSObject, NSApplicationDelegate {
             object: nil
         )
 
+        // Image capture notification (from clipper)
+        center.addObserver(
+            self,
+            selector: #selector(handleImageCaptureNotification),
+            name: NSNotification.Name("io.shade.note.capture.image"),
+            object: nil
+        )
+
         Log.debug("Listening for IPC notifications")
     }
 
@@ -311,16 +320,6 @@ class ShadeAppDelegate: NSObject, NSApplicationDelegate {
     @objc private func handleNoteCaptureNotification(_ notification: Notification) {
         Log.debug("IPC: note.capture")
 
-        // Read context from context.json (written by Hammerspoon)
-        // TODO: Context gathering will move to Shade in future task
-        let context = StateDirectory.readContext()
-        if let ctx = context {
-            Log.debug("Capture context: \(ctx.appType ?? "unknown") from \(ctx.appName ?? "unknown")")
-        }
-
-        // Delete context file after reading (one-shot)
-        StateDirectory.deleteContextFile()
-
         // If already showing and has active surface, just focus
         // (don't create a new capture when already in capture mode)
         if isPanelVisible && !isBackgrounded {
@@ -330,15 +329,38 @@ class ShadeAppDelegate: NSObject, NSApplicationDelegate {
             return
         }
 
-        // Show panel with surface (will recreate if backgrounded)
-        showPanelWithSurface()
+        // Gather context natively (this is the new flow - Shade gathers its own context)
+        Task {
+            let gatheredContext = await ContextGatherer.shared.gather()
+            Log.debug("Gathered context: \(gatheredContext.appType ?? "unknown") from \(gatheredContext.appName ?? "unknown")")
 
-        // Open capture using native RPC (auto-connects with retry)
-        ShadeNvim.shared.connectAndPerform(
-            { nvim in try await nvim.openNewCapture(context: context) },
-            onSuccess: { path in Log.debug("Capture opened: \(path)") },
-            onError: { error in Log.error("Failed to open capture: \(error)") }
-        )
+            // Write context for obsidian.nvim templates to read
+            StateDirectory.writeContext(gatheredContext)
+
+            // Convert to CaptureContext for openNewCapture (backwards compat)
+            let captureContext = CaptureContext(
+                appType: gatheredContext.appType,
+                appName: gatheredContext.appName,
+                windowTitle: gatheredContext.windowTitle,
+                url: gatheredContext.url,
+                filePath: gatheredContext.filePath,
+                selection: gatheredContext.selection,
+                detectedLanguage: gatheredContext.detectedLanguage,
+                timestamp: gatheredContext.timestamp
+            )
+
+            // Show panel with surface (will recreate if backgrounded)
+            await MainActor.run {
+                self.showPanelWithSurface()
+            }
+
+            // Open capture using native RPC (auto-connects with retry)
+            ShadeNvim.shared.connectAndPerform(
+                { nvim in try await nvim.openNewCapture(context: captureContext) },
+                onSuccess: { path in Log.debug("Capture opened: \(path)") },
+                onError: { error in Log.error("Failed to open capture: \(error)") }
+            )
+        }
     }
 
     @objc private func handleDailyNoteNotification(_ notification: Notification) {
@@ -352,6 +374,29 @@ class ShadeAppDelegate: NSObject, NSApplicationDelegate {
             { nvim in try await nvim.openDailyNote() },
             onSuccess: { path in Log.debug("Daily note opened: \(path)") },
             onError: { error in Log.error("Failed to open daily note: \(error)") }
+        )
+    }
+
+    @objc private func handleImageCaptureNotification(_ notification: Notification) {
+        Log.debug("IPC: note.capture.image")
+
+        // Read context (written by clipper.lua with imageFilename)
+        let context = StateDirectory.readContext()
+        if let ctx = context {
+            Log.debug("Image capture context: imageFilename=\(ctx.imageFilename ?? "nil")")
+        }
+
+        // Delete context file after reading (one-shot)
+        StateDirectory.deleteContextFile()
+
+        // Show panel with surface (will recreate if backgrounded)
+        showPanelWithSurface()
+
+        // Open image capture note using native RPC (auto-connects with retry)
+        ShadeNvim.shared.connectAndPerform(
+            { nvim in try await nvim.openImageCapture(context: context) },
+            onSuccess: { path in Log.debug("Image capture opened: \(path)") },
+            onError: { error in Log.error("Failed to open image capture: \(error)") }
         )
     }
 

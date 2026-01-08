@@ -78,6 +78,37 @@ actor ShadeNvim {
     
     /// Socket path
     private let socketPath: String
+
+    // MARK: - Context Gathering Types
+
+    /// Context gathered from nvim for capture notes
+    public struct NvimContext: Sendable {
+        /// Full path to the current file
+        public let filePath: String?
+
+        /// Just the filename (without path)
+        public let fileName: String?
+
+        /// Detected filetype (from treesitter/vim)
+        public let filetype: String?
+
+        /// Whether buffer has unsaved changes
+        public let modified: Bool
+
+        /// Current line number (1-indexed)
+        public let line: Int
+
+        /// Current column number (1-indexed)
+        public let col: Int
+
+        /// Visual selection text (if in/just exited visual mode)
+        public let selection: String?
+
+        /// Whether any meaningful context was captured
+        public var hasContent: Bool {
+            filePath != nil || selection != nil
+        }
+    }
     
     /// Connection retry configuration
     private let maxRetries = 10
@@ -321,6 +352,37 @@ actor ShadeNvim {
         }
     }
     
+    /// Open an image capture note (from clipper)
+    ///
+    /// Uses obsidian.nvim template with imageFilename from context
+    ///
+    /// - Parameter context: Capture context with imageFilename
+    /// - Returns: Description of the created capture
+    /// - Throws: ShadeNvimError if not connected or command fails
+    @discardableResult
+    func openImageCapture(context: CaptureContext? = nil) async throws -> String {
+        guard let api = api, isConnected else {
+            throw ShadeNvimError.notConnected
+        }
+
+        Log.debug("ShadeNvim: Opening image capture")
+
+        // Log context if provided
+        if let ctx = context {
+            Log.debug("ShadeNvim: Image capture context - imageFilename: \(ctx.imageFilename ?? "nil")")
+        }
+
+        // Use obsidian.nvim to create note from capture-image template
+        // The template reads context.json (which clipper.lua writes with imageFilename)
+        do {
+            try await api.command("Obsidian new_from_template capture capture-image")
+            Log.info("ShadeNvim: Created image capture via obsidian.nvim")
+            return "image capture created"
+        } catch let error as NvimAPI.APIError {
+            throw ShadeNvimError.commandFailed(error.localizedDescription)
+        }
+    }
+
     // MARK: - General Commands
     
     /// Execute an Ex command in nvim
@@ -397,6 +459,126 @@ actor ShadeNvim {
     /// - Throws: ShadeNvimError if not connected or save fails
     func saveBuffer() async throws {
         try await command("write")
+    }
+
+    // MARK: - Context Gathering
+
+    /// Gather context from the current nvim buffer for capture notes
+    ///
+    /// This collects file path, filetype, cursor position, and visual selection.
+    /// Used by ContextGatherer when the frontmost app is a terminal running nvim.
+    ///
+    /// - Returns: NvimContext with gathered information
+    /// - Throws: ShadeNvimError if not connected
+    func getContext() async throws -> NvimContext {
+        guard let api = api, isConnected else {
+            throw ShadeNvimError.notConnected
+        }
+
+        Log.debug("ShadeNvim: Gathering context")
+
+        // Get current buffer and window
+        let buffer = try await api.getCurrentBuffer()
+        let window = try await api.getCurrentWindow()
+
+        // Get file path
+        let filePath = try await api.getBufferName(buffer)
+        let hasPath = !filePath.isEmpty
+
+        // Get filename (just the name, not the path)
+        let fileName: String?
+        if hasPath {
+            fileName = try? await api.evalString("expand('%:t')")
+        } else {
+            fileName = nil
+        }
+
+        // Get filetype
+        let filetype = try await api.getBufferFiletype(buffer)
+
+        // Get modified status
+        let modified = try await api.isBufferModified(buffer)
+
+        // Get cursor position (nvim returns 1-indexed row, 0-indexed col)
+        let cursor = try await api.getWindowCursor(window)
+        let line = cursor.row  // Already 1-indexed
+        let col = cursor.col + 1  // Convert to 1-indexed
+
+        // Try to get visual selection
+        let selection = try? await getVisualSelection(api: api, buffer: buffer)
+
+        let context = NvimContext(
+            filePath: hasPath ? filePath : nil,
+            fileName: fileName,
+            filetype: filetype.isEmpty ? nil : filetype,
+            modified: modified,
+            line: line,
+            col: col,
+            selection: selection
+        )
+
+        Log.debug("ShadeNvim: Context gathered - file: \(context.filePath ?? "none"), ft: \(context.filetype ?? "none"), sel: \(context.selection != nil)")
+
+        return context
+    }
+
+    /// Get visual selection text from nvim
+    ///
+    /// This uses the '< and '> marks which are set when exiting visual mode.
+    /// Only works if user was recently in visual mode.
+    ///
+    /// - Parameters:
+    ///   - api: The NvimAPI instance
+    ///   - buffer: The current buffer
+    /// - Returns: Selected text or nil if no selection
+    private func getVisualSelection(api: NvimAPI, buffer: NvimAPI.Buffer) async throws -> String? {
+        // Execute Lua to get visual selection using '< and '> marks
+        // This is more reliable than using getpos() from vimscript
+        let luaCode = """
+            local start_pos = vim.api.nvim_buf_get_mark(0, '<')
+            local end_pos = vim.api.nvim_buf_get_mark(0, '>')
+
+            -- Marks are (row, col), 1-indexed row, 0-indexed col
+            local start_row, start_col = start_pos[1], start_pos[2]
+            local end_row, end_col = end_pos[1], end_pos[2]
+
+            -- If marks are invalid (0,0), no selection
+            if start_row == 0 and start_col == 0 then
+                return nil
+            end
+
+            -- Get the lines in the selection range
+            local lines = vim.api.nvim_buf_get_lines(0, start_row - 1, end_row, false)
+
+            if #lines == 0 then
+                return nil
+            end
+
+            -- Adjust for partial line selection
+            if #lines == 1 then
+                -- Single line selection
+                lines[1] = string.sub(lines[1], start_col + 1, end_col + 1)
+            else
+                -- Multi-line selection
+                lines[1] = string.sub(lines[1], start_col + 1)
+                lines[#lines] = string.sub(lines[#lines], 1, end_col + 1)
+            end
+
+            return table.concat(lines, '\\n')
+            """
+
+        let result = try await api.execLua(luaCode)
+
+        // Result is nil or string
+        if result.isNil {
+            return nil
+        }
+
+        guard let selection = result.stringValue, !selection.isEmpty else {
+            return nil
+        }
+
+        return selection
     }
     
     // MARK: - Message Processing
