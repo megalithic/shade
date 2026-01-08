@@ -72,7 +72,12 @@ actor NvimEvents {
     private var nextSubscriptionID: UInt64 = 1
     
     /// Whether to log events (for debugging)
-    var loggingEnabled: Bool = false
+    private(set) var loggingEnabled: Bool = false
+    
+    /// Enable or disable event logging
+    func setLoggingEnabled(_ enabled: Bool) {
+        loggingEnabled = enabled
+    }
     
     // MARK: - Subscription Management
     

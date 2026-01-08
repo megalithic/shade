@@ -67,6 +67,12 @@ actor ShadeNvim {
     /// The high-level API wrapper
     private var api: NvimAPI?
     
+    /// Event routing system
+    private let events = NvimEvents()
+    
+    /// Task for processing incoming messages
+    private var messageProcessingTask: Task<Void, Never>?
+    
     /// Current connection state
     private(set) var state: ConnectionState = .disconnected
     
@@ -79,6 +85,9 @@ actor ShadeNvim {
     
     /// Whether we were intentionally disconnected (vs nvim crash)
     private var intentionalDisconnect = false
+    
+    /// Set of attached buffer IDs (for cleanup on disconnect)
+    private var attachedBuffers: Set<Int64> = []
     
     // MARK: - Initialization
     
@@ -130,10 +139,14 @@ actor ShadeNvim {
                     Task { await self?.handleUnexpectedDisconnect() }
                 }
                 
-                // Success - create API wrapper
+                // Success - create API wrapper and start message processing
                 self.api = NvimAPI(socket: socket)
                 state = .connected
                 intentionalDisconnect = false
+                
+                // Start processing incoming messages (notifications, requests)
+                startMessageProcessing(socket: socket)
+                
                 Log.info("ShadeNvim: Connected on attempt \(attempt)")
                 return
                 
@@ -160,6 +173,15 @@ actor ShadeNvim {
         
         Log.debug("ShadeNvim: Disconnecting (intentional)")
         intentionalDisconnect = true
+        
+        // Stop message processing
+        messageProcessingTask?.cancel()
+        messageProcessingTask = nil
+        
+        // Clear event subscriptions
+        await events.unsubscribeAll()
+        attachedBuffers.removeAll()
+        
         await socket.disconnect()
         
         self.socket = nil
@@ -173,6 +195,13 @@ actor ShadeNvim {
         
         Log.warn("ShadeNvim: Unexpected disconnection detected (nvim may have crashed)")
         
+        // Stop message processing
+        messageProcessingTask?.cancel()
+        messageProcessingTask = nil
+        
+        // Clear attached buffers (they're gone with nvim)
+        attachedBuffers.removeAll()
+        
         // Clean up state
         self.socket = nil
         self.api = nil
@@ -180,6 +209,7 @@ actor ShadeNvim {
         
         // Note: We don't auto-reconnect here because nvim may not be running.
         // The next operation via connectAndPerform() will attempt to reconnect.
+        // Event subscriptions are kept - they'll work again after reconnect.
     }
     
     /// Force reset connection state (for recovery after errors)
@@ -369,6 +399,24 @@ actor ShadeNvim {
         try await command("write")
     }
     
+    // MARK: - Message Processing
+    
+    /// Start the background task that processes incoming messages from nvim
+    private func startMessageProcessing(socket: NvimSocketManager) {
+        messageProcessingTask = Task { [weak self] in
+            Log.debug("ShadeNvim: Starting message processing loop")
+            
+            for await message in socket.messageStream {
+                guard let self = self else { break }
+                guard !Task.isCancelled else { break }
+                
+                await self.events.process(message)
+            }
+            
+            Log.debug("ShadeNvim: Message processing loop ended")
+        }
+    }
+    
     // MARK: - Private Helpers
     
     /// Escape a file path for use in vim commands
@@ -378,6 +426,168 @@ actor ShadeNvim {
             .replacingOccurrences(of: "\\", with: "\\\\")
             .replacingOccurrences(of: " ", with: "\\ ")
             .replacingOccurrences(of: "|", with: "\\|")
+    }
+}
+
+// MARK: - Buffer Change Notifications
+
+extension ShadeNvim {
+    
+    /// Attach to current buffer for change notifications
+    ///
+    /// After attaching, you'll receive notifications when the buffer content changes.
+    /// Use `onBufferLines`, `onBufferChangedTick`, or `onBufferDetach` to subscribe.
+    ///
+    /// - Parameter sendBuffer: If true, sends full buffer content on first event
+    /// - Returns: Buffer ID that was attached
+    /// - Throws: ShadeNvimError if not connected or attach fails
+    @discardableResult
+    func attachCurrentBuffer(sendBuffer: Bool = false) async throws -> Int64 {
+        guard let api = api, isConnected else {
+            throw ShadeNvimError.notConnected
+        }
+        
+        let buffer = try await api.getCurrentBuffer()
+        let success = try await api.attachBuffer(buffer, sendBuffer: sendBuffer)
+        
+        if success {
+            attachedBuffers.insert(buffer.id)
+            Log.info("ShadeNvim: Attached to buffer \(buffer.id)")
+        } else {
+            Log.warn("ShadeNvim: Failed to attach to buffer \(buffer.id)")
+        }
+        
+        return buffer.id
+    }
+    
+    /// Attach to a specific buffer for change notifications
+    ///
+    /// - Parameters:
+    ///   - bufferId: The buffer ID to attach to
+    ///   - sendBuffer: If true, sends full buffer content on first event
+    /// - Returns: True if attach succeeded
+    /// - Throws: ShadeNvimError if not connected
+    @discardableResult
+    func attachBuffer(_ bufferId: Int64, sendBuffer: Bool = false) async throws -> Bool {
+        guard let api = api, isConnected else {
+            throw ShadeNvimError.notConnected
+        }
+        
+        let buffer = NvimAPI.Buffer(bufferId)
+        let success = try await api.attachBuffer(buffer, sendBuffer: sendBuffer)
+        
+        if success {
+            attachedBuffers.insert(bufferId)
+            Log.info("ShadeNvim: Attached to buffer \(bufferId)")
+        }
+        
+        return success
+    }
+    
+    /// Detach from a buffer (stop receiving notifications)
+    ///
+    /// - Parameter bufferId: The buffer ID to detach from
+    /// - Returns: True if detach succeeded
+    /// - Throws: ShadeNvimError if not connected
+    @discardableResult
+    func detachBuffer(_ bufferId: Int64) async throws -> Bool {
+        guard let api = api, isConnected else {
+            throw ShadeNvimError.notConnected
+        }
+        
+        let buffer = NvimAPI.Buffer(bufferId)
+        let success = try await api.detachBuffer(buffer)
+        
+        if success {
+            attachedBuffers.remove(bufferId)
+            Log.info("ShadeNvim: Detached from buffer \(bufferId)")
+        }
+        
+        return success
+    }
+    
+    /// Detach from all attached buffers
+    func detachAllBuffers() async throws {
+        guard let api = api, isConnected else {
+            throw ShadeNvimError.notConnected
+        }
+        
+        for bufferId in attachedBuffers {
+            let buffer = NvimAPI.Buffer(bufferId)
+            _ = try? await api.detachBuffer(buffer)
+        }
+        
+        let count = attachedBuffers.count
+        attachedBuffers.removeAll()
+        Log.info("ShadeNvim: Detached from \(count) buffer(s)")
+    }
+    
+    /// Get the set of currently attached buffer IDs
+    var attachedBufferIds: Set<Int64> {
+        attachedBuffers
+    }
+    
+    // MARK: - Event Subscriptions
+    
+    /// Subscribe to buffer line change events
+    ///
+    /// Called when lines in an attached buffer change.
+    ///
+    /// - Parameter handler: Callback with parsed event data
+    /// - Returns: Subscription ID for later unsubscription
+    func onBufferLines(
+        handler: @escaping @Sendable (NvimEvents.BufferLinesEvent) -> Void
+    ) async -> NvimEvents.SubscriptionID {
+        return await events.subscribeToBufferLines(handler: handler)
+    }
+    
+    /// Subscribe to buffer changedtick events
+    ///
+    /// Called when buffer changedtick updates (may not include line changes).
+    ///
+    /// - Parameter handler: Callback with parsed event data
+    /// - Returns: Subscription ID for later unsubscription
+    func onBufferChangedTick(
+        handler: @escaping @Sendable (NvimEvents.BufferChangedTickEvent) -> Void
+    ) async -> NvimEvents.SubscriptionID {
+        return await events.subscribeToBufferChangedTick(handler: handler)
+    }
+    
+    /// Subscribe to buffer detach events
+    ///
+    /// Called when nvim detaches from a buffer (e.g., buffer deleted).
+    ///
+    /// - Parameter handler: Callback with parsed event data
+    /// - Returns: Subscription ID for later unsubscription
+    func onBufferDetach(
+        handler: @escaping @Sendable (NvimEvents.BufferDetachEvent) -> Void
+    ) async -> NvimEvents.SubscriptionID {
+        return await events.subscribeToBufferDetach(handler: handler)
+    }
+    
+    /// Subscribe to any nvim notification event by name
+    ///
+    /// - Parameters:
+    ///   - eventName: The event name (e.g., "nvim_buf_lines_event")
+    ///   - handler: Callback with raw event parameters
+    /// - Returns: Subscription ID for later unsubscription
+    func onEvent(
+        _ eventName: String,
+        handler: @escaping @Sendable ([MessagePackValue]) -> Void
+    ) async -> NvimEvents.SubscriptionID {
+        return await events.subscribe(to: eventName, handler: handler)
+    }
+    
+    /// Unsubscribe from an event
+    ///
+    /// - Parameter subscriptionId: The subscription ID from onBufferLines, etc.
+    func unsubscribe(_ subscriptionId: NvimEvents.SubscriptionID) async {
+        await events.unsubscribe(subscriptionId)
+    }
+    
+    /// Enable/disable event logging for debugging
+    func setEventLogging(_ enabled: Bool) async {
+        await events.setLoggingEnabled(enabled)
     }
 }
 
