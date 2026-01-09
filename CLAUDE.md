@@ -1,0 +1,263 @@
+# Shade - Project Instructions for AI Agents
+
+## Overview
+
+Shade is a **native Swift floating terminal panel** powered by libghostty. It provides quick-access terminal (typically nvim) for note capture workflows, with deep Hammerspoon and obsidian.nvim integration.
+
+**Key philosophy**: Native, self-contained, performant. No external dependencies where native solutions exist.
+
+## Quick Reference
+
+| Item | Value |
+|------|-------|
+| Language | Swift 5.9+ |
+| Platform | macOS 13+ (aarch64-darwin) |
+| Terminal backend | libghostty (Ghostty's terminal library) |
+| Build system | Swift Package Manager + Nix flake |
+| Task tracking | beads (`.beads/`) |
+| Version control | jj (Jujutsu) |
+
+## Skills & Agents
+
+**Load the shade skill** from dotfiles for detailed architecture docs:
+- Location: `~/.dotfiles/docs/skills/shade.md`
+- Contains: IPC protocol, context gathering flow, nvim RPC, debugging decision trees
+
+**Related skills**:
+- `nix` - For flake/config work
+- `nvim` - For nvim RPC integration
+- `hs` - For Hammerspoon integration
+
+## Architecture
+
+```
+Hammerspoon (hotkeys, io.shade.* notifications)
+         │
+         ▼ DistributedNotificationCenter
+┌─────────────────────────────────────────────────────────────────┐
+│                         Shade (Swift)                           │
+├─────────────────────────────────────────────────────────────────┤
+│  ShadeAppDelegate     - App lifecycle, notification handlers    │
+│  ShadePanel           - NSPanel (floating, non-activating)      │
+│  TerminalView         - Ghostty surface hosting                 │
+│  ShadeNvim            - Actor for nvim msgpack-rpc              │
+│  ShadeServer          - RPC server on shade.sock                │
+│  ContextGatherer      - Frontmost app context extraction        │
+│  StateDirectory       - XDG state management                    │
+├─────────────────────────────────────────────────────────────────┤
+│  GhosttyKit (libghostty) - Terminal emulation, Metal rendering  │
+└─────────────────────────────────────────────────────────────────┘
+         │                              │
+         ▼                              ▼
+    PTY (nvim TUI)              Unix Socket (nvim RPC)
+                                ~/.local/state/shade/nvim.sock
+```
+
+## Source Files
+
+### Core
+| File | Purpose |
+|------|---------|
+| `main.swift` | CLI parsing, app initialization |
+| `ShadeAppDelegate.swift` | App lifecycle, notification listeners, tick timer |
+| `ShadePanel.swift` | Floating NSPanel configuration |
+| `TerminalView.swift` | NSView hosting ghostty surface |
+
+### nvim Integration
+| File | Purpose |
+|------|---------|
+| `ShadeNvim.swift` | High-level nvim actor (connect, openDaily, openCapture) |
+| `NvimSocketManager.swift` | Low-level msgpack-rpc socket management |
+| `NvimAPI.swift` | Typed nvim API method wrappers |
+| `NvimEvents.swift` | Event handling from nvim |
+| `NvimRPC.swift` | Legacy CLI-based nvim communication |
+
+### Context & IPC
+| File | Purpose |
+|------|---------|
+| `ContextGatherer/` | Extract context from frontmost app (AX, JXA, nvim) |
+| `StateDirectory.swift` | XDG paths, context.json, pid file |
+| `ShadeServer.swift` | msgpack-rpc server for external control |
+
+### Utilities
+| File | Purpose |
+|------|---------|
+| `MsgpackRpc/` | Protocol encoder/decoder library |
+| `GlobalHotkey.swift` | Emergency Cmd+Escape via CGEvent tap |
+| `MenuBarManager.swift` | Menu bar status item |
+
+## Build & Development
+
+### Prerequisites
+
+Enter the Nix dev shell (builds GhosttyKit automatically):
+```bash
+nix develop
+```
+
+Or use pre-built GhosttyKit:
+```bash
+nix develop .#lite
+```
+
+### Common Commands
+
+```bash
+just build          # Debug build
+just release        # Optimized build
+just dev            # Build + run with --verbose --width 0.4 --height 0.4
+just install        # Install to ~/.local/bin
+just check-deps     # Verify GhosttyKit is available
+just clean          # Remove .build/
+```
+
+### Testing
+
+```bash
+swift test                           # All tests
+swift test --filter MsgpackRpcTests  # Specific test target
+```
+
+## IPC Protocol
+
+Shade listens for macOS distributed notifications:
+
+| Notification | Action |
+|--------------|--------|
+| `io.shade.toggle` | Toggle panel visibility |
+| `io.shade.show` | Show panel |
+| `io.shade.hide` | Hide panel |
+| `io.shade.quit` | Terminate app |
+| `io.shade.note.capture` | Open quick capture note |
+| `io.shade.note.daily` | Open daily note |
+| `io.shade.note.capture.image` | Open image capture note |
+
+**Send from shell:**
+```bash
+swift -e 'import Foundation; DistributedNotificationCenter.default().post(name: NSNotification.Name("io.shade.toggle"), object: nil)'
+```
+
+## State Directory
+
+`~/.local/state/shade/`:
+| File | Purpose |
+|------|---------|
+| `nvim.sock` | nvim RPC socket |
+| `shade.sock` | ShadeServer RPC socket |
+| `context.json` | Capture context for templates |
+| `shade.pid` | Process ID |
+
+## Configuration
+
+**Config file**: `~/.config/shade/config.json` (generated by Nix)
+
+Shade reads this at startup. The config is managed in dotfiles:
+- **Source**: `~/.dotfiles/home/programs/shade.nix`
+- **Rebuild**: `just rebuild` (in dotfiles)
+
+Config is **immutable** (Nix-generated). Use CLI flags or env vars for runtime overrides.
+
+## Current Development: MLX Swift Integration
+
+**Epic**: `shade-ahf` (MLX Swift Integration)
+
+### Direction
+- Native on-device LLM via MLX Swift (not Ollama HTTP)
+- Config key: `llm` (not `mlx`) for backend flexibility
+- Default model: `mlx-community/Qwen3-8B-Instruct-4bit`
+- Quality over speed (notes are permanent)
+
+### Async Pipeline
+1. VisionKit OCR (instant, native)
+2. Insert text + placeholders into note
+3. Background: MLX summarizes/categorizes
+4. nvim RPC replaces placeholders when done
+5. User notified via nvim
+
+### Plan Document
+See `docs/mlx-swift-integration-plan.md` for full architecture.
+
+## Beads (Task Tracking)
+
+```bash
+bd ready                    # Available tasks
+bd show shade-ahf           # MLX integration epic
+bd update <id> --status=in_progress
+bd close <id>
+```
+
+Key epics:
+- `shade-ahf` - MLX Swift Integration (active)
+- `shade-cgn` - Image capture intelligence (OCR + AI)
+
+## Debugging
+
+### Check if Shade is running
+```bash
+pgrep -x shade && cat ~/.local/state/shade/shade.pid
+```
+
+### Check nvim socket
+```bash
+ls -la ~/.local/state/shade/nvim.sock
+nvim --server ~/.local/state/shade/nvim.sock --remote-expr 'v:version'
+```
+
+### Check context
+```bash
+cat ~/.local/state/shade/context.json | jq .
+```
+
+### View logs
+```bash
+log stream --predicate 'subsystem == "io.shade"' --level debug
+```
+
+### Test notifications (from Hammerspoon)
+```lua
+require("lib.interop.shade").toggle()
+```
+
+## Common Patterns
+
+### Adding nvim RPC methods
+
+1. Add method to `ShadeNvim.swift`:
+```swift
+func newMethod() async throws {
+    try await nvimSocket.request(method: "nvim_command", params: [...])
+}
+```
+
+2. Call from notification handler in `ShadeAppDelegate.swift`
+
+### Adding IPC notifications
+
+1. Define constant in `ShadeAppDelegate.swift`
+2. Add observer in `setupNotificationListeners()`
+3. Implement handler method
+4. Update Hammerspoon `shade.lua` if needed
+
+### Extending context.json
+
+1. Add field to context struct in `ContextGatherer.swift`
+2. Populate in appropriate gatherer (AX, JXA, nvim)
+3. Update obsidian.nvim template to use new field
+
+## Version Control
+
+**Use jj (Jujutsu), not git:**
+```bash
+jj status
+jj new -m "description"
+jj commit -m "message"
+jj log
+```
+
+## Don't
+
+- Don't use `git` commands (use `jj`)
+- Don't use `brew install` (use `nix run/shell` or add to flake)
+- Don't hardcode paths (use StateDirectory or config)
+- Don't make Hammerspoon send nvim commands directly (Shade handles nvim RPC)
+- Don't modify `~/.config/shade/config.json` directly (it's Nix-generated)
