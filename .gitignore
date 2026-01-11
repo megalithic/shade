@@ -3,8 +3,10 @@
 .swiftpm/
 Package.resolved
 
-# Vendored dependencies (large binaries)
-vendor/
+# Vendored dependencies
+vendor/GhosttyKit/
+# Track mlx-swift-lm source (needed for build, ~2MB)
+!vendor/mlx-swift-lm/
 
 # Xcode
 *.xcodeproj/

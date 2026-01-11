@@ -78,7 +78,7 @@ let ghostty = findGhosttyKit()
 let package = Package(
     name: "shade",
     platforms: [
-        .macOS(.v13)
+        .macOS(.v14)  // MLX Swift requires macOS 14+
     ],
     products: [
         .executable(name: "shade", targets: ["shade"]),
@@ -87,6 +87,8 @@ let package = Package(
     ],
     dependencies: [
         .package(url: "https://github.com/a2/MessagePack.swift.git", from: "4.0.0"),
+        // MLX Swift for on-device LLM inference (vendored due to SPM cache issues)
+        .package(path: "vendor/mlx-swift-lm"),
     ],
     targets: [
         // Pure msgpack-rpc protocol library (no GhosttyKit dependency)
@@ -110,6 +112,9 @@ let package = Package(
                 "MsgpackRpc",
                 "ContextGatherer",
                 .product(name: "MessagePack", package: "MessagePack.swift"),
+                // MLX Swift LLM inference
+                .product(name: "MLXLLM", package: "mlx-swift-lm"),
+                .product(name: "MLXLMCommon", package: "mlx-swift-lm"),
             ],
             path: "Sources",
             exclude: ["MsgpackRpc", "ContextGatherer"],
