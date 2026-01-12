@@ -432,21 +432,53 @@ class ShadeAppDelegate: NSObject, NSApplicationDelegate {
         // Resize panel to capture size (smaller)
         panel?.resize(width: appConfig.captureWidth, height: appConfig.captureHeight)
 
-        // Read context (written by clipper.lua with imageFilename)
-        let context = StateDirectory.readContext()
-        if let ctx = context {
-            Log.debug("Image capture context: imageFilename=\(ctx.imageFilename ?? "nil")")
+        // Read context (written by clipper.lua with tempImagePath)
+        guard var context = StateDirectory.readContext() else {
+            Log.error("Image capture: no context file found")
+            return
         }
 
-        // Delete context file after reading (one-shot)
-        StateDirectory.deleteContextFile()
+        // Check for tempImagePath (new flow: Shade handles image)
+        if let tempPath = context.tempImagePath {
+            Log.debug("Image capture: processing temp image at \(tempPath)")
+
+            // Process the image: copy to vault assets, delete temp
+            let result = ImageCaptureHandler.processCapture(tempPath: tempPath)
+
+            switch result {
+            case .success(let assetFilename):
+                // Update context with final asset filename
+                context.imageFilename = assetFilename
+                context.tempImagePath = nil  // Clear temp path
+
+                // Write updated context for obsidian.nvim template
+                StateDirectory.writeCaptureContext(context)
+                Log.debug("Image capture: asset filename = \(assetFilename)")
+
+            case .failure(let error):
+                Log.error("Image capture failed: \(error.localizedDescription)")
+                // Still try to open note, but without image
+                StateDirectory.deleteContextFile()
+                showPanelWithSurface()
+                return
+            }
+        } else if context.imageFilename != nil {
+            // Legacy flow: Hammerspoon already processed the image
+            // Just use the existing imageFilename
+            Log.debug("Image capture: using pre-processed imageFilename=\(context.imageFilename ?? "nil")")
+        } else {
+            Log.warn("Image capture: no tempImagePath or imageFilename in context")
+        }
 
         // Show panel with surface (will recreate if backgrounded)
         showPanelWithSurface()
 
+        // Capture context for async closure (Swift 6 compliance)
+        let finalContext = context
+
         // Open image capture note using native RPC (auto-connects with retry)
         ShadeNvim.shared.connectAndPerform(
-            { nvim in try await nvim.openImageCapture(context: context) },
+            { nvim in try await nvim.openImageCapture(context: finalContext) },
             onSuccess: { path in Log.debug("Image capture opened: \(path)") },
             onError: { error in Log.error("Failed to open image capture: \(error)") }
         )

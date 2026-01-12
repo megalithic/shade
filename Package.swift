@@ -84,6 +84,7 @@ let package = Package(
         .executable(name: "shade", targets: ["shade"]),
         .library(name: "MsgpackRpc", targets: ["MsgpackRpc"]),
         .library(name: "ContextGatherer", targets: ["ContextGatherer"]),
+        .library(name: "ShadeCore", targets: ["ShadeCore"]),
     ],
     dependencies: [
         .package(url: "https://github.com/a2/MessagePack.swift.git", from: "4.0.0"),
@@ -105,19 +106,26 @@ let package = Package(
             dependencies: [],
             path: "Sources/ContextGatherer"
         ),
+        // Core types and utilities (no GhosttyKit dependency, fully testable)
+        .target(
+            name: "ShadeCore",
+            dependencies: [],
+            path: "Sources/ShadeCore"
+        ),
         // Main executable with GhosttyKit
         .executableTarget(
             name: "shade",
             dependencies: [
                 "MsgpackRpc",
                 "ContextGatherer",
+                "ShadeCore",
                 .product(name: "MessagePack", package: "MessagePack.swift"),
                 // MLX Swift LLM inference
                 .product(name: "MLXLLM", package: "mlx-swift-lm"),
                 .product(name: "MLXLMCommon", package: "mlx-swift-lm"),
             ],
             path: "Sources",
-            exclude: ["MsgpackRpc", "ContextGatherer"],
+            exclude: ["MsgpackRpc", "ContextGatherer", "ShadeCore"],
             swiftSettings: [
                 // Import path for GhosttyKit module
                 .unsafeFlags([
@@ -172,6 +180,14 @@ let package = Package(
                 .product(name: "MessagePack", package: "MessagePack.swift"),
             ],
             path: "Tests/ShadeServerTests"
+        ),
+        // Tests for ShadeCore (image capture, config, context)
+        .testTarget(
+            name: "ShadeCoreTests",
+            dependencies: [
+                "ShadeCore",
+            ],
+            path: "Tests/ShadeCoreTests"
         ),
     ]
 )

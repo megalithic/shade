@@ -129,6 +129,27 @@ enum StateDirectory {
         }
     }
 
+    /// Write capture context to JSON file
+    /// Used for image captures where Shade processes the image and writes final context
+    /// - Parameter context: The capture context to write
+    /// - Returns: true if successful
+    @discardableResult
+    static func writeCaptureContext(_ context: CaptureContext) -> Bool {
+        ensureDirectoryExists()
+
+        do {
+            let encoder = JSONEncoder()
+            encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+            let data = try encoder.encode(context)
+            try data.write(to: contextFile, options: .atomic)
+            Log.debug("Wrote capture context: imageFilename=\(context.imageFilename ?? "nil")")
+            return true
+        } catch {
+            Log.error("Failed to write capture context: \(error)")
+            return false
+        }
+    }
+
     /// Write gathered context to JSON file
     /// Called by Shade after gathering context natively
     /// - Parameter context: The gathered context to write
@@ -184,6 +205,7 @@ struct CaptureContext: Codable {
     var detectedLanguage: String? // Detected language for code
     var timestamp: String?       // ISO8601 timestamp
     var imageFilename: String?   // Image filename for clipper captures (e.g., "20260108-123456.png")
+    var tempImagePath: String?   // Temporary image path (HS writes this, Shade processes it)
 
     enum CodingKeys: String, CodingKey {
         case appType = "appType"
@@ -195,10 +217,12 @@ struct CaptureContext: Codable {
         case detectedLanguage = "detectedLanguage"
         case timestamp = "timestamp"
         case imageFilename = "imageFilename"
+        case tempImagePath = "tempImagePath"
     }
 
     /// Whether this is an image capture (from clipper)
+    /// Now checks for either processed imageFilename or unprocessed tempImagePath
     var isImageCapture: Bool {
-        imageFilename != nil
+        imageFilename != nil || tempImagePath != nil
     }
 }

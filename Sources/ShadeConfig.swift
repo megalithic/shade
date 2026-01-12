@@ -6,6 +6,7 @@ struct ShadeConfig: Codable {
     var llm: LLMConfig?
     var capture: CaptureConfig?
     var window: WindowConfig?
+    var notes: NotesConfig?
 
     /// Load config from XDG config directory
     /// Returns default config if file doesn't exist
@@ -149,6 +150,61 @@ struct WindowConfig: Codable {
         case widthPercent = "width_percent"
         case heightPercent = "height_percent"
         case position
+    }
+}
+
+// MARK: - Notes Configuration
+
+/// Configuration for notes vault paths
+/// Shade uses these to copy images to assets and know vault structure
+struct NotesConfig: Codable {
+    /// Root of the notes vault (e.g., ~/notes or ~/iclouddrive/Documents/_notes)
+    var home: String?
+
+    /// Assets directory for images (defaults to {home}/assets)
+    var assetsDir: String?
+
+    /// Captures directory for capture notes (defaults to {home}/captures)
+    var capturesDir: String?
+
+    enum CodingKeys: String, CodingKey {
+        case home
+        case assetsDir = "assets_dir"
+        case capturesDir = "captures_dir"
+    }
+
+    /// Resolve home path, checking environment and common locations
+    func resolvedHome() -> String {
+        if let home = home, !home.isEmpty {
+            return (home as NSString).expandingTildeInPath
+        }
+        // Check NOTES_HOME environment variable
+        if let notesHome = ProcessInfo.processInfo.environment["NOTES_HOME"] {
+            return notesHome
+        }
+        // Fallback to common locations
+        let userHome = FileManager.default.homeDirectoryForCurrentUser.path
+        let iCloudPath = "\(userHome)/iclouddrive/Documents/_notes"
+        if FileManager.default.fileExists(atPath: iCloudPath) {
+            return iCloudPath
+        }
+        return "\(userHome)/notes"
+    }
+
+    /// Resolve assets directory path
+    func resolvedAssetsDir() -> String {
+        if let assetsDir = assetsDir, !assetsDir.isEmpty {
+            return (assetsDir as NSString).expandingTildeInPath
+        }
+        return "\(resolvedHome())/assets"
+    }
+
+    /// Resolve captures directory path
+    func resolvedCapturesDir() -> String {
+        if let capturesDir = capturesDir, !capturesDir.isEmpty {
+            return (capturesDir as NSString).expandingTildeInPath
+        }
+        return "\(resolvedHome())/captures"
     }
 }
 
