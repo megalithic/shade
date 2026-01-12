@@ -69,6 +69,15 @@ struct AppConfig {
     /// Capture note panel height
     var captureHeight: Double = 0.4
 
+    // MARK: - LLM Configuration
+
+    /// Disable LLM features entirely
+    var noLLM: Bool = false
+    /// LLM backend override (e.g., "mlx", "ollama")
+    var llmBackend: String? = nil
+    /// LLM model override (e.g., "mlx-community/Qwen3-8B-Instruct-4bit")
+    var llmModel: String? = nil
+
     static func parse() -> AppConfig {
         var config = AppConfig()
         let args = CommandLine.arguments
@@ -128,6 +137,19 @@ struct AppConfig {
                     config.captureHeight = val
                     i += 1
                 }
+            // LLM options
+            case "--no-llm":
+                config.noLLM = true
+            case "--llm-backend":
+                if i + 1 < args.count {
+                    config.llmBackend = args[i + 1]
+                    i += 1
+                }
+            case "--llm-model":
+                if i + 1 < args.count {
+                    config.llmModel = args[i + 1]
+                    i += 1
+                }
             case "--help":
                 printUsage()
                 exit(0)
@@ -160,6 +182,11 @@ struct AppConfig {
           -v, --verbose            Enable verbose logging
           --help                   Show this help
 
+        LLM Options:
+          --no-llm                 Disable LLM features entirely
+          --llm-backend <backend>  LLM backend: "mlx" (default), "ollama"
+          --llm-model <model>      Model ID (e.g., "mlx-community/Qwen3-8B-Instruct-4bit")
+
         Toggle via distributed notification:
           io.shade.toggle          Toggle visibility
           io.shade.show            Show panel
@@ -183,6 +210,15 @@ let appConfig = AppConfig.parse()
 
 // Enable verbose logging if requested
 Log.verbose = appConfig.verbose
+
+// Apply LLM CLI overrides to ShadeConfig
+let cliArgs = CLIArguments(
+    noLLM: appConfig.noLLM,
+    llmBackend: appConfig.llmBackend,
+    llmModel: appConfig.llmModel
+)
+ShadeConfig.configure(with: cliArgs)
+Log.debug("ShadeConfig initialized (LLM enabled: \(ShadeConfig.shared.llm?.enabled ?? true))")
 
 // Initialize Ghostty global state FIRST - this is required before any other API calls
 if ghostty_init(UInt(CommandLine.argc), CommandLine.unsafeArgv) != GHOSTTY_SUCCESS {
