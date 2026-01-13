@@ -133,6 +133,48 @@ final class CaptureContextTests: XCTestCase {
         XCTAssertNil(decoded.selection)
         XCTAssertNil(decoded.imageFilename)
         XCTAssertNil(decoded.tempImagePath)
+        XCTAssertNil(decoded.extractedText)
+        XCTAssertNil(decoded.ocrConfidence)
+    }
+
+    // MARK: - OCR Field Tests
+
+    func testOCRFields_ExtractedText() {
+        let context = CaptureContext(
+            imageFilename: "test.png",
+            extractedText: "Hello from OCR",
+            ocrConfidence: 0.95
+        )
+
+        XCTAssertEqual(context.extractedText, "Hello from OCR")
+        XCTAssertEqual(context.ocrConfidence, 0.95)
+    }
+
+    func testOCRFields_JSON_RoundTrip() throws {
+        let context = CaptureContext(
+            appType: "screenshot",
+            imageFilename: "20260113-143045.png",
+            extractedText: "OCR extracted this text\nWith multiple lines",
+            ocrConfidence: 0.87
+        )
+
+        let data = try context.toJSON()
+        let decoded = try CaptureContext.fromJSON(data)
+
+        XCTAssertEqual(decoded.extractedText, context.extractedText)
+        XCTAssertEqual(decoded.ocrConfidence, context.ocrConfidence)
+    }
+
+    func testOCRFields_EncodedInJSON() throws {
+        let context = CaptureContext(
+            extractedText: "Test text",
+            ocrConfidence: 0.9
+        )
+
+        let json = try context.toJSONString()
+
+        XCTAssertTrue(json.contains("\"extractedText\""))
+        XCTAssertTrue(json.contains("\"ocrConfidence\""))
     }
 
     func testJSON_PrettyPrintOption() throws {

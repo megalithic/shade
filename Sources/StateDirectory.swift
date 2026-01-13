@@ -1,5 +1,6 @@
 import Foundation
 import ContextGatherer
+import ShadeCore
 
 /// Manages XDG-compliant state directories for shade
 /// Uses ~/.local/state/shade/ for runtime state files
@@ -193,36 +194,5 @@ enum StateDirectory {
 }
 
 // MARK: - Capture Context
-
-/// Context passed from Hammerspoon for quick capture
-struct CaptureContext: Codable {
-    var appType: String?         // "browser", "terminal", "neovim", "screenshot", "other"
-    var appName: String?         // "Brave Browser", etc.
-    var windowTitle: String?     // Window title
-    var url: String?             // URL if browser
-    var filePath: String?        // File path if editor
-    var selection: String?       // Selected text
-    var detectedLanguage: String? // Detected language for code
-    var timestamp: String?       // ISO8601 timestamp
-    var imageFilename: String?   // Image filename for clipper captures (e.g., "20260108-123456.png")
-    var tempImagePath: String?   // Temporary image path (HS writes this, Shade processes it)
-
-    enum CodingKeys: String, CodingKey {
-        case appType = "appType"
-        case appName = "appName"
-        case windowTitle = "windowTitle"
-        case url = "url"
-        case filePath = "filePath"
-        case selection = "selection"
-        case detectedLanguage = "detectedLanguage"
-        case timestamp = "timestamp"
-        case imageFilename = "imageFilename"
-        case tempImagePath = "tempImagePath"
-    }
-
-    /// Whether this is an image capture (from clipper)
-    /// Now checks for either processed imageFilename or unprocessed tempImagePath
-    var isImageCapture: Bool {
-        imageFilename != nil || tempImagePath != nil
-    }
-}
+// CaptureContext is now defined in ShadeCore module
+// Imported via `import ShadeCore` at top of file

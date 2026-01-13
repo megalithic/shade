@@ -1,4 +1,13 @@
 import Foundation
+import ShadeCore
+
+/// Result of processing an image capture
+struct CaptureResult {
+    /// The filename only (e.g., "20260113-143045.png")
+    let filename: String
+    /// Full path to the asset (e.g., "/Users/.../notes/assets/20260113-143045.png")
+    let assetPath: String
+}
 
 /// Handles image capture operations: copying to vault assets, cleanup
 /// Centralizes image file management so Shade owns the entire image lifecycle
@@ -8,8 +17,8 @@ enum ImageCaptureHandler {
 
     /// Process an image capture from a temp file path
     /// - Parameter tempPath: Path to temporary image file (from Hammerspoon clipper)
-    /// - Returns: Result with asset filename on success, or error on failure
-    static func processCapture(tempPath: String) -> Result<String, ImageCaptureError> {
+    /// - Returns: Result with CaptureResult (filename + assetPath) on success, or error on failure
+    static func processCapture(tempPath: String) -> Result<CaptureResult, ImageCaptureError> {
         // Validate temp file exists
         guard FileManager.default.fileExists(atPath: tempPath) else {
             Log.error("ImageCapture: temp file not found: \(tempPath)")
@@ -44,7 +53,7 @@ enum ImageCaptureHandler {
         // Delete temp file (best effort, don't fail if cleanup fails)
         deleteTempFile(tempPath)
 
-        return .success(filename)
+        return .success(CaptureResult(filename: filename, assetPath: destPath))
     }
 
     /// Generate a timestamped filename for the image

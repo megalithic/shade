@@ -1,4 +1,5 @@
 import Foundation
+import ShadeCore
 
 /// Simple nvim RPC client using `nvim --server --remote-send`
 /// This is Option A: shell out to nvim for commands

@@ -35,6 +35,14 @@ public struct CaptureContext: Codable, Equatable {
     /// Shade processes this, copies to assets, and replaces with imageFilename
     public var tempImagePath: String?
 
+    /// Text extracted from image via OCR (VisionKit)
+    /// Set by Shade after running VisionOCR on the image
+    public var extractedText: String?
+
+    /// OCR confidence score (0.0 - 1.0)
+    /// Average confidence across all text blocks
+    public var ocrConfidence: Float?
+
     public init(
         appType: String? = nil,
         appName: String? = nil,
@@ -45,7 +53,9 @@ public struct CaptureContext: Codable, Equatable {
         detectedLanguage: String? = nil,
         timestamp: String? = nil,
         imageFilename: String? = nil,
-        tempImagePath: String? = nil
+        tempImagePath: String? = nil,
+        extractedText: String? = nil,
+        ocrConfidence: Float? = nil
     ) {
         self.appType = appType
         self.appName = appName
@@ -57,6 +67,8 @@ public struct CaptureContext: Codable, Equatable {
         self.timestamp = timestamp
         self.imageFilename = imageFilename
         self.tempImagePath = tempImagePath
+        self.extractedText = extractedText
+        self.ocrConfidence = ocrConfidence
     }
 
     enum CodingKeys: String, CodingKey {
@@ -70,6 +82,8 @@ public struct CaptureContext: Codable, Equatable {
         case timestamp = "timestamp"
         case imageFilename = "imageFilename"
         case tempImagePath = "tempImagePath"
+        case extractedText = "extractedText"
+        case ocrConfidence = "ocrConfidence"
     }
 
     /// Whether this is an image capture (from clipper)

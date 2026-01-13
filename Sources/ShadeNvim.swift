@@ -1,5 +1,6 @@
 import Foundation
 import MsgpackRpc
+import ShadeCore
 @preconcurrency import MessagePack
 
 /// Manages the nvim connection lifecycle and provides high-level note operations.

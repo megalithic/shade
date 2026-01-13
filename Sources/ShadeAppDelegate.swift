@@ -1,6 +1,7 @@
 import AppKit
 import ContextGatherer
 import GhosttyKit
+import ShadeCore
 
 /// Main application delegate that manages the ghostty app and terminal panel
 class ShadeAppDelegate: NSObject, NSApplicationDelegate {
@@ -446,14 +447,47 @@ class ShadeAppDelegate: NSObject, NSApplicationDelegate {
             let result = ImageCaptureHandler.processCapture(tempPath: tempPath)
 
             switch result {
-            case .success(let assetFilename):
+            case .success(let captureResult):
                 // Update context with final asset filename
-                context.imageFilename = assetFilename
+                context.imageFilename = captureResult.filename
                 context.tempImagePath = nil  // Clear temp path
+                Log.debug("Image capture: asset filename = \(captureResult.filename)")
 
-                // Write updated context for obsidian.nvim template
-                StateDirectory.writeCaptureContext(context)
-                Log.debug("Image capture: asset filename = \(assetFilename)")
+                // Run OCR on the asset image (synchronous - VisionKit is fast)
+                // Capture context for async closure (Swift 6 compliance)
+                var capturedContext = context
+                let assetPath = captureResult.assetPath
+
+                Task {
+                    do {
+                        let ocr = VisionOCR()
+                        let ocrResult = try await ocr.extractText(from: assetPath)
+
+                        if ocrResult.hasText {
+                            capturedContext.extractedText = ocrResult.text
+                            capturedContext.ocrConfidence = ocrResult.confidence
+                            Log.info("Image capture: OCR extracted \(ocrResult.blocks.count) blocks, confidence=\(String(format: "%.2f", ocrResult.confidence))")
+                        } else {
+                            Log.debug("Image capture: OCR found no text")
+                        }
+                    } catch {
+                        Log.warn("Image capture: OCR failed: \(error.localizedDescription)")
+                        // Continue without OCR - not fatal
+                    }
+
+                    // Write updated context for obsidian.nvim template
+                    StateDirectory.writeCaptureContext(capturedContext)
+
+                    // Capture for MainActor closure
+                    let finalContext = capturedContext
+
+                    // Open image capture note (must be on main actor for UI)
+                    await MainActor.run {
+                        self.showPanelWithSurface()
+                        self.openImageCaptureNote(context: finalContext)
+                    }
+                }
+                return  // Early return - async task handles the rest
 
             case .failure(let error):
                 Log.error("Image capture failed: \(error.localizedDescription)")
@@ -473,6 +507,12 @@ class ShadeAppDelegate: NSObject, NSApplicationDelegate {
         // Show panel with surface (will recreate if backgrounded)
         showPanelWithSurface()
 
+        // Open image capture note
+        openImageCaptureNote(context: context)
+    }
+
+    /// Helper to open image capture note via nvim RPC
+    private func openImageCaptureNote(context: CaptureContext) {
         // Capture context for async closure (Swift 6 compliance)
         let finalContext = context
 
