@@ -795,12 +795,14 @@ class ShadeAppDelegate: NSObject, NSApplicationDelegate {
                 context.tempImagePath = nil  // Clear temp path
                 Log.debug("Image capture: asset filename = \(captureResult.filename)")
 
-                // Run OCR on the asset image (synchronous - VisionKit is fast)
-                // Capture context for async closure (Swift 6 compliance)
+                // Run OCR on the asset image (VisionKit is fast, runs before note opens)
                 var capturedContext = context
                 let assetPath = captureResult.assetPath
 
                 Task {
+                    var ocrText: String?
+
+                    // Run OCR first (fast, native)
                     do {
                         let ocr = VisionOCR()
                         let ocrResult = try await ocr.extractText(from: assetPath)
@@ -808,10 +810,8 @@ class ShadeAppDelegate: NSObject, NSApplicationDelegate {
                         if ocrResult.hasText {
                             capturedContext.extractedText = ocrResult.text
                             capturedContext.ocrConfidence = ocrResult.confidence
+                            ocrText = ocrResult.text
                             Log.info("Image capture: OCR extracted \(ocrResult.blocks.count) blocks, confidence=\(String(format: "%.2f", ocrResult.confidence))")
-
-                            // Run MLX summarization on extracted text
-                            await self.enrichWithMLX(text: ocrResult.text, context: &capturedContext)
                         } else {
                             Log.debug("Image capture: OCR found no text")
                         }
@@ -820,17 +820,19 @@ class ShadeAppDelegate: NSObject, NSApplicationDelegate {
                         // Continue without OCR - not fatal
                     }
 
-                    // Write updated context for obsidian.nvim template
+                    // Write context for obsidian.nvim template (without summary/tags yet)
                     StateDirectory.writeCaptureContext(capturedContext)
 
-                    // Capture for MainActor closure
-                    let finalContext = capturedContext
-
-                    // Open image capture note (must be on main actor for UI)
+                    // Show panel and open note
                     await MainActor.run {
                         self.showPanelWithSurface()
-                        self.openImageCaptureNote(context: finalContext)
                     }
+
+                    // Open note and start async enrichment pipeline
+                    await self.openImageCaptureWithAsyncEnrichment(
+                        context: capturedContext,
+                        ocrText: ocrText
+                    )
                 }
                 return  // Early return - async task handles the rest
 
@@ -852,11 +854,76 @@ class ShadeAppDelegate: NSObject, NSApplicationDelegate {
         // Show panel with surface (will recreate if backgrounded)
         showPanelWithSurface()
 
-        // Open image capture note
+        // Open image capture note (legacy path without async enrichment)
         openImageCaptureNote(context: context)
     }
 
-    /// Helper to open image capture note via nvim RPC
+    /// Open image capture note and start async enrichment pipeline
+    ///
+    /// This is the new async flow:
+    /// 1. Open the note via obsidian.nvim template
+    /// 2. Insert placeholders for summary/tags
+    /// 3. Start background MLX enrichment
+    /// 4. MLX task replaces placeholders when done
+    private func openImageCaptureWithAsyncEnrichment(
+        context: CaptureContext,
+        ocrText: String?
+    ) async {
+        let nvim = ShadeNvim.shared
+
+        // Step 1: Connect and open the note
+        do {
+            if await !nvim.isConnected {
+                try await nvim.connect()
+            }
+
+            _ = try await nvim.openImageCapture(context: context)
+            Log.debug("Image capture: note opened")
+
+            // Small delay to ensure buffer is ready
+            try await Task.sleep(nanoseconds: 100_000_000) // 100ms
+
+            // Step 2: If we have OCR text, set up async enrichment
+            if let text = ocrText, !text.isEmpty {
+                // Insert placeholders into the buffer
+                let inserted = try await nvim.insertEnrichmentPlaceholders()
+                if inserted {
+                    Log.debug("Image capture: placeholders inserted")
+                }
+
+                // Get the buffer ID
+                let bufferId = try await nvim.getCurrentBufferId()
+
+                // Attach to buffer for close detection
+                try await nvim.attachBuffer(bufferId)
+
+                // Build GatheredContext for categorization
+                let gatheredContext = GatheredContext(
+                    appType: context.appType,
+                    appName: context.appName,
+                    url: context.url,
+                    filePath: context.filePath,
+                    detectedLanguage: context.detectedLanguage
+                )
+
+                // Step 3: Start async enrichment (runs in background)
+                let enrichmentId = await AsyncEnrichmentManager.shared.startEnrichment(
+                    bufferId: bufferId,
+                    ocrText: text,
+                    context: gatheredContext
+                )
+
+                Log.info("Image capture: started async enrichment \(enrichmentId.id) for buffer \(bufferId)")
+            } else {
+                Log.debug("Image capture: no OCR text, skipping enrichment")
+            }
+
+        } catch {
+            Log.error("Image capture: failed to open note: \(error.localizedDescription)")
+        }
+    }
+
+    /// Helper to open image capture note via nvim RPC (legacy path)
     private func openImageCaptureNote(context: CaptureContext) {
         // Capture context for async closure (Swift 6 compliance)
         let finalContext = context
@@ -869,47 +936,13 @@ class ShadeAppDelegate: NSObject, NSApplicationDelegate {
         )
     }
 
-    /// Enrich captured context with MLX LLM summarization and categorization
-    /// Errors are logged but don't block the capture flow
-    private func enrichWithMLX(text: String, context: inout CaptureContext) async {
-        let mlx = MLXInferenceEngine.shared
-
-        // Build GatheredContext for categorization (reuse fields from CaptureContext)
-        let gatheredContext = GatheredContext(
-            appType: context.appType,
-            appName: context.appName,
-            url: context.url,
-            filePath: context.filePath,
-            detectedLanguage: context.detectedLanguage
-        )
-
-        // Run summarization
-        do {
-            let summary = try await mlx.summarize(text, style: .concise)
-            context.summary = summary
-            Log.info("Image capture: MLX summary generated (\(summary.count) chars)")
-        } catch MLXInferenceError.llmDisabled {
-            Log.debug("Image capture: LLM disabled, skipping summarization")
-        } catch {
-            Log.warn("Image capture: MLX summarization failed: \(error.localizedDescription)")
-        }
-
-        // Run categorization
-        do {
-            let tags = try await mlx.categorize(text, context: gatheredContext)
-            if !tags.isEmpty {
-                context.suggestedTags = tags
-                Log.info("Image capture: MLX suggested tags: \(tags.joined(separator: ", "))")
-            }
-        } catch MLXInferenceError.llmDisabled {
-            // Already logged above, no need to repeat
-        } catch {
-            Log.warn("Image capture: MLX categorization failed: \(error.localizedDescription)")
-        }
-    }
-
     func applicationWillTerminate(_ notification: Notification) {
         Log.debug("Shutting down...")
+
+        // Cancel any pending async enrichments
+        Task {
+            await AsyncEnrichmentManager.shared.cancelAll()
+        }
 
         // Stop state monitoring
         stateMonitorTask?.cancel()

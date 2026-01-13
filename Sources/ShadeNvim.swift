@@ -432,8 +432,26 @@ actor ShadeNvim {
         guard let api = api, isConnected else {
             throw ShadeNvimError.notConnected
         }
-        
+
         return try await api.eval(expr)
+    }
+
+    /// Execute Lua code in nvim
+    ///
+    /// - Parameter code: Lua code to execute
+    /// - Returns: Result as MessagePackValue
+    /// - Throws: ShadeNvimError if not connected or execution fails
+    @discardableResult
+    func executeLua(_ code: String) async throws -> MessagePackValue {
+        guard let api = api, isConnected else {
+            throw ShadeNvimError.notConnected
+        }
+
+        do {
+            return try await api.execLua(code)
+        } catch let error as NvimAPI.APIError {
+            throw ShadeNvimError.commandFailed(error.localizedDescription)
+        }
     }
     
     /// Open a file in nvim
@@ -479,6 +497,72 @@ actor ShadeNvim {
     /// - Throws: ShadeNvimError if not connected or save fails
     func saveBuffer() async throws {
         try await command("write")
+    }
+
+    /// Get the current buffer ID
+    ///
+    /// - Returns: Buffer ID (Int64)
+    /// - Throws: ShadeNvimError if not connected
+    func getCurrentBufferId() async throws -> Int64 {
+        guard let api = api, isConnected else {
+            throw ShadeNvimError.notConnected
+        }
+
+        let buffer = try await api.getCurrentBuffer()
+        return buffer.id
+    }
+
+    /// Insert enrichment placeholders into the current buffer
+    ///
+    /// This finds the end of frontmatter and inserts placeholder comments
+    /// that will be replaced when async MLX enrichment completes.
+    ///
+    /// - Parameter includeOcrText: Whether to also insert OCR text placeholder
+    /// - Returns: True if placeholders were inserted
+    /// - Throws: ShadeNvimError if not connected or operation fails
+    @discardableResult
+    func insertEnrichmentPlaceholders(includeOcrText: Bool = false) async throws -> Bool {
+        guard isConnected else {
+            throw ShadeNvimError.notConnected
+        }
+
+        // Use Lua to find frontmatter end and insert placeholders
+        let luaCode = """
+            local lines = vim.api.nvim_buf_get_lines(0, 0, -1, false)
+            local frontmatter_end = nil
+            local in_frontmatter = false
+
+            -- Find end of frontmatter
+            for i, line in ipairs(lines) do
+                if line == '---' then
+                    if not in_frontmatter then
+                        in_frontmatter = true
+                    else
+                        frontmatter_end = i
+                        break
+                    end
+                end
+            end
+
+            if not frontmatter_end then
+                return false
+            end
+
+            -- Insert placeholders after frontmatter
+            local placeholders = {
+                "",
+                "<!-- shade:pending:summary -->",
+                "",
+                "<!-- shade:pending:tags -->",
+                ""
+            }
+
+            vim.api.nvim_buf_set_lines(0, frontmatter_end, frontmatter_end, false, placeholders)
+            return true
+            """
+
+        let result = try await executeLua(luaCode)
+        return result.boolValue ?? false
     }
 
     // MARK: - Context Gathering

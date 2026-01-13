@@ -1,6 +1,7 @@
 import Foundation
 @preconcurrency import MessagePack
 import MsgpackRpc
+import ContextGatherer
 
 /// RPC server that allows nvim (and other clients) to send commands to Shade.
 /// Listens on ~/.local/state/shade/shade.sock
@@ -9,16 +10,32 @@ import MsgpackRpc
 /// - NvimSocketManager: Shade connects to nvim's socket (client)
 /// - ShadeServer: Shade listens on its own socket (server)
 ///
-/// ## Supported Methods
+/// ## Panel Methods
 /// - `hide()` - Hide the Shade panel
 /// - `show()` - Show the Shade panel
 /// - `toggle()` - Toggle panel visibility
 /// - `get_context()` - Get current capture context
+/// - `ping()` - Connectivity test
+///
+/// ## MLX LLM Methods
+/// - `summarize(text, style?)` - Summarize text (styles: concise, brief, bullets, technical)
+/// - `categorize(text, context?)` - Get tag suggestions for text
+/// - `model_status()` - Get model status (isLoaded, modelId, loadTime)
+/// - `model_load()` - Pre-load the model (optional, auto-loads on first use)
+/// - `model_unload()` - Unload model to free GPU memory
 ///
 /// ## Usage from nvim
 /// ```lua
 /// local shade = require('shade')
 /// shade.hide()  -- Hide panel after :wq
+///
+/// -- MLX summarization
+/// local result = shade.summarize("Long text here...")
+/// print(result.summary)
+///
+/// -- Check model status
+/// local status = shade.model_status()
+/// if status.isLoaded then print("Model: " .. status.modelId) end
 /// ```
 actor ShadeServer {
     
@@ -125,6 +142,134 @@ actor ShadeServer {
         // ping() - Simple connectivity test
         handlers["ping"] = { _ in
             return .string("pong")
+        }
+
+        // MARK: - MLX LLM Methods
+
+        // summarize(text, style?) - Summarize text using MLX
+        // Params: { text: string, style?: "concise"|"brief"|"bullets"|"technical" }
+        // Returns: { summary: string } or { error: string }
+        handlers["summarize"] = { params in
+            let text: String
+            let style: SummarizationStyle
+
+            // Parse params - can be string or dict
+            if let str = params.stringValue {
+                text = str
+                style = .concise
+            } else if let dict = params.dictionaryValue {
+                guard let t = dict[.string("text")]?.stringValue else {
+                    return .map([.string("error"): .string("Missing 'text' parameter")])
+                }
+                text = t
+
+                // Parse optional style
+                if let styleStr = dict[.string("style")]?.stringValue {
+                    switch styleStr {
+                    case "concise": style = .concise
+                    case "brief": style = .brief
+                    case "bullets": style = .bullets
+                    case "technical": style = .technical
+                    default: style = .concise
+                    }
+                } else {
+                    style = .concise
+                }
+            } else {
+                return .map([.string("error"): .string("Invalid params: expected string or {text, style?}")])
+            }
+
+            do {
+                let summary = try await MLXInferenceEngine.shared.summarize(text, style: style)
+                return .map([.string("summary"): .string(summary)])
+            } catch {
+                return .map([.string("error"): .string(error.localizedDescription)])
+            }
+        }
+
+        // categorize(text, context?) - Get tag suggestions for text
+        // Params: { text: string, context?: { appType?, appName?, url?, ... } }
+        // Returns: { tags: [string] } or { error: string }
+        handlers["categorize"] = { params in
+            let text: String
+            var context: GatheredContext? = nil
+
+            // Parse params
+            if let str = params.stringValue {
+                text = str
+            } else if let dict = params.dictionaryValue {
+                guard let t = dict[.string("text")]?.stringValue else {
+                    return .map([.string("error"): .string("Missing 'text' parameter")])
+                }
+                text = t
+
+                // Parse optional context
+                if let ctxDict = dict[.string("context")]?.dictionaryValue {
+                    context = GatheredContext(
+                        appType: ctxDict[.string("appType")]?.stringValue,
+                        appName: ctxDict[.string("appName")]?.stringValue,
+                        url: ctxDict[.string("url")]?.stringValue,
+                        filePath: ctxDict[.string("filePath")]?.stringValue,
+                        detectedLanguage: ctxDict[.string("detectedLanguage")]?.stringValue
+                    )
+                }
+            } else {
+                return .map([.string("error"): .string("Invalid params: expected string or {text, context?}")])
+            }
+
+            do {
+                let tags = try await MLXInferenceEngine.shared.categorize(text, context: context)
+                return .map([.string("tags"): .array(tags.map { .string($0) })])
+            } catch {
+                return .map([.string("error"): .string(error.localizedDescription)])
+            }
+        }
+
+        // model_status() - Get MLX model status
+        // Returns: { isLoaded: bool, modelId?: string, loadTime?: string, lastUsedTime?: string, idleTimeoutSeconds: int, idleSeconds?: int }
+        handlers["model_status"] = { _ in
+            let status = await MLXInferenceEngine.shared.status()
+            let formatter = ISO8601DateFormatter()
+
+            var result: [MessagePackValue: MessagePackValue] = [
+                .string("isLoaded"): .bool(status.isLoaded),
+                .string("idleTimeoutSeconds"): .int(Int64(status.idleTimeoutSeconds))
+            ]
+
+            if let modelId = status.modelId {
+                result[.string("modelId")] = .string(modelId)
+            }
+
+            if let loadTime = status.loadTime {
+                result[.string("loadTime")] = .string(formatter.string(from: loadTime))
+            }
+
+            if let lastUsed = status.lastUsedTime {
+                result[.string("lastUsedTime")] = .string(formatter.string(from: lastUsed))
+                // Calculate current idle time
+                let idleSeconds = Int(Date().timeIntervalSince(lastUsed))
+                result[.string("idleSeconds")] = .int(Int64(idleSeconds))
+            }
+
+            return .map(result)
+        }
+
+        // model_unload() - Unload MLX model to free memory
+        // Returns: { success: bool }
+        handlers["model_unload"] = { _ in
+            await MLXInferenceEngine.shared.unloadModel()
+            return .map([.string("success"): .bool(true)])
+        }
+
+        // model_load() - Pre-load the MLX model (optional, happens automatically on first use)
+        // Returns: { success: bool } or { error: string }
+        handlers["model_load"] = { _ in
+            do {
+                try await MLXInferenceEngine.shared.ensureModelLoaded()
+                return .map([.string("success"): .bool(true)])
+            } catch {
+                return .map([.string("error"): .string(error.localizedDescription)])
+            }
         }
     }
     

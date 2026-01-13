@@ -76,6 +76,8 @@ struct MLXModelStatus: Sendable {
     let isLoaded: Bool
     let modelId: String?
     let loadTime: Date?
+    let lastUsedTime: Date?
+    let idleTimeoutSeconds: Int
 }
 
 // MARK: - MLX Inference Engine
@@ -105,6 +107,12 @@ actor MLXInferenceEngine {
 
     /// When the model was loaded
     private var loadTime: Date?
+
+    /// When the model was last used (for idle timeout)
+    private var lastUsedTime: Date?
+
+    /// Background task for checking idle timeout
+    private var idleCheckTask: Task<Void, Never>?
 
     /// Whether a model load is in progress
     private var isLoading = false
@@ -224,6 +232,9 @@ actor MLXInferenceEngine {
 
             let response = try await freshSession.respond(to: prompt)
 
+            // Record usage for idle timeout
+            recordUsage()
+
             Log.debug("Generated summary: \(response.count) chars")
             return response.trimmingCharacters(in: .whitespacesAndNewlines)
 
@@ -271,6 +282,9 @@ actor MLXInferenceEngine {
             )
 
             let response = try await session.respond(to: prompt)
+
+            // Record usage for idle timeout
+            recordUsage()
 
             Log.debug("Categorization response: \(response)")
             return parseTagsResponse(response)
@@ -350,21 +364,87 @@ actor MLXInferenceEngine {
         MLXModelStatus(
             isLoaded: modelContainer != nil,
             modelId: modelContainer != nil ? config.model : nil,
-            loadTime: loadTime
+            loadTime: loadTime,
+            lastUsedTime: lastUsedTime,
+            idleTimeoutSeconds: config.idleTimeout
         )
     }
 
     /// Unload the model to free memory
     func unloadModel() {
         Log.info("Unloading MLX model")
+        stopIdleTimer()
         chatSession = nil
         modelContainer = nil
         loadTime = nil
+        lastUsedTime = nil
     }
 
     /// Check if the model is currently loaded
     var isModelLoaded: Bool {
         modelContainer != nil
+    }
+
+    // MARK: - Idle Timeout
+
+    /// Record model usage and restart idle timer
+    private func recordUsage() {
+        lastUsedTime = Date()
+
+        // Start/restart idle timer if timeout is configured
+        if config.idleTimeout > 0 {
+            startIdleTimer()
+        }
+    }
+
+    /// Start the idle check timer
+    private func startIdleTimer() {
+        // Cancel existing timer
+        idleCheckTask?.cancel()
+
+        let timeoutSeconds = config.idleTimeout
+        guard timeoutSeconds > 0 else { return }
+
+        // Check every minute or at timeout, whichever is shorter
+        let checkInterval = min(60, timeoutSeconds)
+
+        idleCheckTask = Task { [weak self] in
+            while !Task.isCancelled {
+                // Sleep for check interval
+                try? await Task.sleep(nanoseconds: UInt64(checkInterval) * 1_000_000_000)
+
+                guard !Task.isCancelled else { break }
+
+                // Check if we should unload
+                await self?.checkIdleAndUnload()
+            }
+        }
+
+        Log.debug("MLX idle timer started (timeout: \(timeoutSeconds)s)")
+    }
+
+    /// Stop the idle check timer
+    private func stopIdleTimer() {
+        idleCheckTask?.cancel()
+        idleCheckTask = nil
+    }
+
+    /// Check if model has been idle too long and unload if so
+    private func checkIdleAndUnload() {
+        guard let lastUsed = lastUsedTime else { return }
+        guard modelContainer != nil else {
+            // Model already unloaded, stop the timer
+            stopIdleTimer()
+            return
+        }
+
+        let idleSeconds = Date().timeIntervalSince(lastUsed)
+        let timeoutSeconds = Double(config.idleTimeout)
+
+        if idleSeconds >= timeoutSeconds {
+            Log.info("MLX model idle for \(Int(idleSeconds))s, unloading to free memory")
+            unloadModel()
+        }
     }
 
     // MARK: - Private Helpers
