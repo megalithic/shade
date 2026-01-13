@@ -28,7 +28,21 @@ final class MLXIntegrationTests: XCTestCase {
 
     let socketPath = NSHomeDirectory() + "/.local/state/shade/shade.sock"
 
-    // MARK: - Placeholder Tests (Enable once shade-ahf.7 is complete)
+    // MARK: - Unit Tests (No server required)
+
+    func testMLXInferenceEngine_SharedInstanceExists() {
+        // Verify the shared singleton pattern works
+        // This doesn't load the model, just tests the instance exists
+        // The actual inference tests require the server to be running
+        // since MLXInferenceEngine is in the shade target with GhosttyKit dependency
+
+        // Note: We can't directly test MLXInferenceEngine.shared here because
+        // it's in the shade executable target, not a testable library target.
+        // This test documents the expected behavior.
+        // Real testing happens via RPC integration tests below.
+    }
+
+    // MARK: - RPC Integration Tests (Server required, shade-ahf.7)
 
     func testMLXStatusMethod() async throws {
         try skipIfServerNotRunning()

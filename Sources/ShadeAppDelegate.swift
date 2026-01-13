@@ -440,6 +440,15 @@ class ShadeAppDelegate: NSObject, NSApplicationDelegate {
         if isPanelVisible {
             hidePanel()
         } else {
+            // Reset to floating mode when showing from hidden state
+            // Sidebar mode is only valid when actively set via io.shade.mode.sidebar-*
+            if currentMode != .floating {
+                Log.debug("Resetting to floating mode (was \(currentMode.rawValue))")
+                currentMode = .floating
+                companionBundleID = nil
+                companionOriginalFrame = nil
+                panel?.resize(width: appConfig.width, height: appConfig.height)
+            }
             capturePreviousFocusedApp()
             showPanelWithSurface()
         }
@@ -447,6 +456,14 @@ class ShadeAppDelegate: NSObject, NSApplicationDelegate {
 
     @objc private func handleShowNotification(_ notification: Notification) {
         Log.debug("IPC: show")
+        // Reset to floating mode when showing from hidden state
+        if currentMode != .floating {
+            Log.debug("Resetting to floating mode (was \(currentMode.rawValue))")
+            currentMode = .floating
+            companionBundleID = nil
+            companionOriginalFrame = nil
+            panel?.resize(width: appConfig.width, height: appConfig.height)
+        }
         capturePreviousFocusedApp()
         showPanelWithSurface()
     }
@@ -506,12 +523,16 @@ class ShadeAppDelegate: NSObject, NSApplicationDelegate {
     private func enterSidebarMode(_ mode: PanelMode) {
         guard mode != .floating else { return }
 
-        // Capture the frontmost app (used for both focus restoration and companion tracking)
-        let frontApp = capturePreviousFocusedApp()
-        companionBundleID = frontApp?.bundleIdentifier
+        // Use lastNonShadeFrontApp for companion tracking (actively tracked via workspace notifications)
+        // This ensures mode toggling uses the CURRENT focused app, not a stale capture
+        let companionApp = lastNonShadeFrontApp
+        companionBundleID = companionApp?.bundleIdentifier
         currentMode = mode
 
-        Log.debug("Entering sidebar mode: \(mode.rawValue), companion: \(frontApp?.localizedName ?? "none")")
+        // Also capture for focus restoration (separate concern)
+        capturePreviousFocusedApp()
+
+        Log.debug("Entering sidebar mode: \(mode.rawValue), companion: \(companionApp?.localizedName ?? "none")")
 
         // Get screen frame for calculations
         guard let screen = NSScreen.main ?? NSScreen.screens.first else {
@@ -529,7 +550,7 @@ class ShadeAppDelegate: NSObject, NSApplicationDelegate {
         }
 
         // Save companion window's original frame before resizing
-        if let app = frontApp {
+        if let app = companionApp {
             companionOriginalFrame = getWindowFrame(for: app)
             Log.debug("Saved companion original frame: \(companionOriginalFrame?.debugDescription ?? "nil")")
         }
@@ -541,7 +562,7 @@ class ShadeAppDelegate: NSObject, NSApplicationDelegate {
         showPanelWithSurface(skipPositioning: true)
 
         // Resize companion window to fill remaining space
-        if let app = frontApp, companionOriginalFrame != nil {
+        if let app = companionApp, companionOriginalFrame != nil {
             let companionFrame: CGRect
             switch mode {
             case .sidebarLeft:
@@ -788,6 +809,9 @@ class ShadeAppDelegate: NSObject, NSApplicationDelegate {
                             capturedContext.extractedText = ocrResult.text
                             capturedContext.ocrConfidence = ocrResult.confidence
                             Log.info("Image capture: OCR extracted \(ocrResult.blocks.count) blocks, confidence=\(String(format: "%.2f", ocrResult.confidence))")
+
+                            // Run MLX summarization on extracted text
+                            await self.enrichWithMLX(text: ocrResult.text, context: &capturedContext)
                         } else {
                             Log.debug("Image capture: OCR found no text")
                         }
@@ -843,6 +867,45 @@ class ShadeAppDelegate: NSObject, NSApplicationDelegate {
             onSuccess: { path in Log.debug("Image capture opened: \(path)") },
             onError: { error in Log.error("Failed to open image capture: \(error)") }
         )
+    }
+
+    /// Enrich captured context with MLX LLM summarization and categorization
+    /// Errors are logged but don't block the capture flow
+    private func enrichWithMLX(text: String, context: inout CaptureContext) async {
+        let mlx = MLXInferenceEngine.shared
+
+        // Build GatheredContext for categorization (reuse fields from CaptureContext)
+        let gatheredContext = GatheredContext(
+            appType: context.appType,
+            appName: context.appName,
+            url: context.url,
+            filePath: context.filePath,
+            detectedLanguage: context.detectedLanguage
+        )
+
+        // Run summarization
+        do {
+            let summary = try await mlx.summarize(text, style: .concise)
+            context.summary = summary
+            Log.info("Image capture: MLX summary generated (\(summary.count) chars)")
+        } catch MLXInferenceError.llmDisabled {
+            Log.debug("Image capture: LLM disabled, skipping summarization")
+        } catch {
+            Log.warn("Image capture: MLX summarization failed: \(error.localizedDescription)")
+        }
+
+        // Run categorization
+        do {
+            let tags = try await mlx.categorize(text, context: gatheredContext)
+            if !tags.isEmpty {
+                context.suggestedTags = tags
+                Log.info("Image capture: MLX suggested tags: \(tags.joined(separator: ", "))")
+            }
+        } catch MLXInferenceError.llmDisabled {
+            // Already logged above, no need to repeat
+        } catch {
+            Log.warn("Image capture: MLX categorization failed: \(error.localizedDescription)")
+        }
     }
 
     func applicationWillTerminate(_ notification: Notification) {

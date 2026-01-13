@@ -43,6 +43,14 @@ public struct CaptureContext: Codable, Equatable {
     /// Average confidence across all text blocks
     public var ocrConfidence: Float?
 
+    /// LLM-generated summary of extracted text
+    /// Set by Shade after running MLXInferenceEngine.summarize() on OCR text
+    public var summary: String?
+
+    /// LLM-suggested tags for categorization
+    /// Set by Shade after running MLXInferenceEngine.categorize() on OCR text
+    public var suggestedTags: [String]?
+
     public init(
         appType: String? = nil,
         appName: String? = nil,
@@ -55,7 +63,9 @@ public struct CaptureContext: Codable, Equatable {
         imageFilename: String? = nil,
         tempImagePath: String? = nil,
         extractedText: String? = nil,
-        ocrConfidence: Float? = nil
+        ocrConfidence: Float? = nil,
+        summary: String? = nil,
+        suggestedTags: [String]? = nil
     ) {
         self.appType = appType
         self.appName = appName
@@ -69,6 +79,8 @@ public struct CaptureContext: Codable, Equatable {
         self.tempImagePath = tempImagePath
         self.extractedText = extractedText
         self.ocrConfidence = ocrConfidence
+        self.summary = summary
+        self.suggestedTags = suggestedTags
     }
 
     enum CodingKeys: String, CodingKey {
@@ -84,6 +96,8 @@ public struct CaptureContext: Codable, Equatable {
         case tempImagePath = "tempImagePath"
         case extractedText = "extractedText"
         case ocrConfidence = "ocrConfidence"
+        case summary = "summary"
+        case suggestedTags = "suggestedTags"
     }
 
     /// Whether this is an image capture (from clipper)

@@ -390,3 +390,13 @@ extension MLXInferenceEngine {
         try await summarize(text, style: .concise)
     }
 }
+
+// MARK: - Shared Instance
+
+extension MLXInferenceEngine {
+
+    /// Shared singleton instance for app-wide LLM inference
+    /// Uses ShadeConfig.shared.llm for configuration
+    /// Model is loaded lazily on first inference call
+    static let shared = MLXInferenceEngine()
+}

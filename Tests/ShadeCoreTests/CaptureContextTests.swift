@@ -135,6 +135,8 @@ final class CaptureContextTests: XCTestCase {
         XCTAssertNil(decoded.tempImagePath)
         XCTAssertNil(decoded.extractedText)
         XCTAssertNil(decoded.ocrConfidence)
+        XCTAssertNil(decoded.summary)
+        XCTAssertNil(decoded.suggestedTags)
     }
 
     // MARK: - OCR Field Tests
@@ -175,6 +177,87 @@ final class CaptureContextTests: XCTestCase {
 
         XCTAssertTrue(json.contains("\"extractedText\""))
         XCTAssertTrue(json.contains("\"ocrConfidence\""))
+    }
+
+    // MARK: - LLM Field Tests
+
+    func testLLMFields_Summary() {
+        let context = CaptureContext(
+            imageFilename: "test.png",
+            extractedText: "Original OCR text",
+            summary: "A concise summary of the content"
+        )
+
+        XCTAssertEqual(context.summary, "A concise summary of the content")
+    }
+
+    func testLLMFields_SuggestedTags() {
+        let context = CaptureContext(
+            imageFilename: "test.png",
+            suggestedTags: ["web-development", "api-design", "documentation"]
+        )
+
+        XCTAssertEqual(context.suggestedTags?.count, 3)
+        XCTAssertEqual(context.suggestedTags?[0], "web-development")
+        XCTAssertEqual(context.suggestedTags?[1], "api-design")
+        XCTAssertEqual(context.suggestedTags?[2], "documentation")
+    }
+
+    func testLLMFields_JSON_RoundTrip() throws {
+        let context = CaptureContext(
+            appType: "screenshot",
+            imageFilename: "20260113-143045.png",
+            extractedText: "OCR extracted text",
+            ocrConfidence: 0.92,
+            summary: "This is a summary of the OCR content",
+            suggestedTags: ["meeting-notes", "action-items"]
+        )
+
+        let data = try context.toJSON()
+        let decoded = try CaptureContext.fromJSON(data)
+
+        XCTAssertEqual(decoded.summary, context.summary)
+        XCTAssertEqual(decoded.suggestedTags, context.suggestedTags)
+    }
+
+    func testLLMFields_EncodedInJSON() throws {
+        let context = CaptureContext(
+            summary: "Test summary",
+            suggestedTags: ["tag1", "tag2"]
+        )
+
+        let json = try context.toJSONString()
+
+        XCTAssertTrue(json.contains("\"summary\""))
+        XCTAssertTrue(json.contains("\"suggestedTags\""))
+        XCTAssertTrue(json.contains("\"tag1\""))
+        XCTAssertTrue(json.contains("\"tag2\""))
+    }
+
+    func testLLMFields_DecodesFromJSON() throws {
+        let json = """
+        {
+            "appType": "screenshot",
+            "imageFilename": "capture.png",
+            "extractedText": "Some OCR text",
+            "summary": "Summary from LLM",
+            "suggestedTags": ["swift", "ios-development"]
+        }
+        """
+
+        let context = try CaptureContext.fromJSONString(json)
+
+        XCTAssertEqual(context.summary, "Summary from LLM")
+        XCTAssertEqual(context.suggestedTags, ["swift", "ios-development"])
+    }
+
+    func testLLMFields_EmptyTagsArray() throws {
+        let context = CaptureContext(suggestedTags: [])
+
+        let data = try context.toJSON()
+        let decoded = try CaptureContext.fromJSON(data)
+
+        XCTAssertEqual(decoded.suggestedTags, [])
     }
 
     func testJSON_PrettyPrintOption() throws {
@@ -243,6 +326,10 @@ final class CaptureContextTests: XCTestCase {
         XCTAssertNil(context.timestamp)
         XCTAssertNil(context.imageFilename)
         XCTAssertNil(context.tempImagePath)
+        XCTAssertNil(context.extractedText)
+        XCTAssertNil(context.ocrConfidence)
+        XCTAssertNil(context.summary)
+        XCTAssertNil(context.suggestedTags)
     }
 
     func testInit_AcceptsAllParameters() {
@@ -256,7 +343,11 @@ final class CaptureContextTests: XCTestCase {
             detectedLanguage: "markdown",
             timestamp: "2026-01-12T14:30:45Z",
             imageFilename: "image.png",
-            tempImagePath: "/tmp/temp.png"
+            tempImagePath: "/tmp/temp.png",
+            extractedText: "OCR text",
+            ocrConfidence: 0.95,
+            summary: "LLM summary",
+            suggestedTags: ["tag1", "tag2"]
         )
 
         XCTAssertEqual(context.appType, "browser")
@@ -269,5 +360,9 @@ final class CaptureContextTests: XCTestCase {
         XCTAssertEqual(context.timestamp, "2026-01-12T14:30:45Z")
         XCTAssertEqual(context.imageFilename, "image.png")
         XCTAssertEqual(context.tempImagePath, "/tmp/temp.png")
+        XCTAssertEqual(context.extractedText, "OCR text")
+        XCTAssertEqual(context.ocrConfidence, 0.95)
+        XCTAssertEqual(context.summary, "LLM summary")
+        XCTAssertEqual(context.suggestedTags, ["tag1", "tag2"])
     }
 }

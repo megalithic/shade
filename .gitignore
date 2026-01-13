@@ -20,6 +20,9 @@ DerivedData/
 *.xccheckout
 *.moved-aside
 
+# Session handoffs (AI agent context, not for version control)
+.handoff/
+
 # macOS
 .DS_Store
 .AppleDouble
