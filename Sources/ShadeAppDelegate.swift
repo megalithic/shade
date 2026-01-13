@@ -1,4 +1,5 @@
 import AppKit
+import ApplicationServices
 import ContextGatherer
 import GhosttyKit
 import ShadeCore
@@ -41,6 +42,9 @@ class ShadeAppDelegate: NSObject, NSApplicationDelegate {
 
     /// Bundle ID of companion app when in sidebar mode (for restoration)
     private var companionBundleID: String?
+
+    /// Original frame of companion window (for restoration when exiting sidebar)
+    private var companionOriginalFrame: CGRect?
 
     /// Previously focused app (to restore focus when hiding)
     private var previousFocusedApp: NSRunningApplication?
@@ -461,6 +465,8 @@ class ShadeAppDelegate: NSObject, NSApplicationDelegate {
     @objc private func handleModeFloatingNotification(_ notification: Notification) {
         Log.debug("IPC: mode.floating")
         exitSidebarMode()
+        // Resize panel back to default floating dimensions
+        panel?.resize(width: appConfig.width, height: appConfig.height)
         showPanelWithSurface()
     }
 
@@ -496,6 +502,7 @@ class ShadeAppDelegate: NSObject, NSApplicationDelegate {
     // MARK: - Sidebar Mode
 
     /// Enter sidebar mode - dock panel to edge and resize companion app
+    /// Shade handles ALL window management directly (no Hammerspoon round-trip)
     private func enterSidebarMode(_ mode: PanelMode) {
         guard mode != .floating else { return }
 
@@ -504,41 +511,173 @@ class ShadeAppDelegate: NSObject, NSApplicationDelegate {
         companionBundleID = frontApp?.bundleIdentifier
         currentMode = mode
 
-        Log.debug("Entering sidebar mode: \(mode.rawValue), companion: \(companionBundleID ?? "none")")
+        Log.debug("Entering sidebar mode: \(mode.rawValue), companion: \(frontApp?.localizedName ?? "none")")
 
-        // Position panel at edge with sidebar width
+        // Get screen frame for calculations
+        guard let screen = NSScreen.main ?? NSScreen.screens.first else {
+            Log.warn("No screen available for sidebar mode")
+            return
+        }
+        let screenFrame = screen.visibleFrame
+
+        // Calculate sidebar width
+        let sidebarWidth: CGFloat
+        if appConfig.sidebarWidth <= 1.0 {
+            sidebarWidth = screenFrame.width * CGFloat(appConfig.sidebarWidth)
+        } else {
+            sidebarWidth = CGFloat(appConfig.sidebarWidth)
+        }
+
+        // Save companion window's original frame before resizing
+        if let app = frontApp {
+            companionOriginalFrame = getWindowFrame(for: app)
+            Log.debug("Saved companion original frame: \(companionOriginalFrame?.debugDescription ?? "nil")")
+        }
+
+        // Position Shade panel at edge
         panel?.positionSidebar(mode: mode, width: appConfig.sidebarWidth)
 
-        // Show the panel
-        showPanelWithSurface()
+        // Show the panel (skip repositioning since we just positioned it for sidebar)
+        showPanelWithSurface(skipPositioning: true)
 
-        // Notify Hammerspoon to resize the companion app
-        let userInfo: [String: Any] = [
-            "edge": mode.rawValue,
-            "width": panel?.frame.width ?? 0,
-            "companionBundleID": companionBundleID ?? ""
-        ]
-        DistributedNotificationCenter.default().post(
-            name: NSNotification.Name("io.shade.sidebar.enter"),
-            object: nil,
-            userInfo: userInfo as [AnyHashable: Any]
-        )
+        // Resize companion window to fill remaining space
+        if let app = frontApp, companionOriginalFrame != nil {
+            let companionFrame: CGRect
+            switch mode {
+            case .sidebarLeft:
+                // Shade on left, companion on right
+                companionFrame = CGRect(
+                    x: screenFrame.origin.x + sidebarWidth,
+                    y: screenFrame.origin.y,
+                    width: screenFrame.width - sidebarWidth,
+                    height: screenFrame.height
+                )
+            case .sidebarRight:
+                // Shade on right, companion on left
+                companionFrame = CGRect(
+                    x: screenFrame.origin.x,
+                    y: screenFrame.origin.y,
+                    width: screenFrame.width - sidebarWidth,
+                    height: screenFrame.height
+                )
+            case .floating:
+                return // Already guarded above
+            }
+
+            if setWindowFrame(for: app, frame: companionFrame) {
+                Log.debug("Resized companion to: \(companionFrame.debugDescription)")
+            } else {
+                Log.warn("Failed to resize companion window")
+            }
+        }
     }
 
-    /// Exit sidebar mode - notify Hammerspoon to restore companion app
+    /// Exit sidebar mode - restore companion app to original size
+    /// Shade handles ALL window management directly (no Hammerspoon round-trip)
     private func exitSidebarMode() {
         guard currentMode != .floating else { return }
 
         Log.debug("Exiting sidebar mode")
 
-        // Notify Hammerspoon to restore companion window
-        DistributedNotificationCenter.default().post(
-            name: NSNotification.Name("io.shade.sidebar.exit"),
-            object: nil
-        )
+        // Restore companion window to original frame
+        if let bundleID = companionBundleID,
+           let originalFrame = companionOriginalFrame,
+           let app = NSRunningApplication.runningApplications(withBundleIdentifier: bundleID).first {
+            if setWindowFrame(for: app, frame: originalFrame) {
+                Log.debug("Restored companion to original frame: \(originalFrame.debugDescription)")
+            } else {
+                Log.warn("Failed to restore companion window")
+            }
+        }
 
         currentMode = .floating
         companionBundleID = nil
+        companionOriginalFrame = nil
+    }
+
+    // MARK: - Window Management (AXUIElement)
+
+    /// Get the main window's frame for an application using Accessibility API
+    private func getWindowFrame(for app: NSRunningApplication) -> CGRect? {
+        let appElement = AXUIElementCreateApplication(app.processIdentifier)
+
+        // Get the main or focused window
+        var window: AnyObject?
+        var result = AXUIElementCopyAttributeValue(appElement, kAXFocusedWindowAttribute as CFString, &window)
+        if result != .success {
+            result = AXUIElementCopyAttributeValue(appElement, kAXMainWindowAttribute as CFString, &window)
+        }
+
+        guard result == .success, let windowElement = window else {
+            Log.debug("Could not get window for \(app.localizedName ?? "app")")
+            return nil
+        }
+
+        // Get position
+        var positionValue: AnyObject?
+        guard AXUIElementCopyAttributeValue(windowElement as! AXUIElement, kAXPositionAttribute as CFString, &positionValue) == .success,
+              let position = positionValue else {
+            return nil
+        }
+
+        var point = CGPoint.zero
+        if !AXValueGetValue(position as! AXValue, .cgPoint, &point) {
+            return nil
+        }
+
+        // Get size
+        var sizeValue: AnyObject?
+        guard AXUIElementCopyAttributeValue(windowElement as! AXUIElement, kAXSizeAttribute as CFString, &sizeValue) == .success,
+              let size = sizeValue else {
+            return nil
+        }
+
+        var dimensions = CGSize.zero
+        if !AXValueGetValue(size as! AXValue, .cgSize, &dimensions) {
+            return nil
+        }
+
+        return CGRect(origin: point, size: dimensions)
+    }
+
+    /// Set the main window's frame for an application using Accessibility API
+    @discardableResult
+    private func setWindowFrame(for app: NSRunningApplication, frame: CGRect) -> Bool {
+        let appElement = AXUIElementCreateApplication(app.processIdentifier)
+
+        // Get the main or focused window
+        var window: AnyObject?
+        var result = AXUIElementCopyAttributeValue(appElement, kAXFocusedWindowAttribute as CFString, &window)
+        if result != .success {
+            result = AXUIElementCopyAttributeValue(appElement, kAXMainWindowAttribute as CFString, &window)
+        }
+
+        guard result == .success, let windowElement = window as! AXUIElement? else {
+            Log.debug("Could not get window for \(app.localizedName ?? "app") to set frame")
+            return false
+        }
+
+        // Set position
+        var point = frame.origin
+        guard let positionValue = AXValueCreate(.cgPoint, &point) else {
+            return false
+        }
+        let posResult = AXUIElementSetAttributeValue(windowElement, kAXPositionAttribute as CFString, positionValue)
+        if posResult != .success {
+            Log.debug("Failed to set position: \(posResult.rawValue)")
+        }
+
+        // Set size
+        var size = frame.size
+        guard let sizeValue = AXValueCreate(.cgSize, &size) else {
+            return false
+        }
+        let sizeResult = AXUIElementSetAttributeValue(windowElement, kAXSizeAttribute as CFString, sizeValue)
+        if sizeResult != .success {
+            Log.debug("Failed to set size: \(sizeResult.rawValue)")
+        }
+
+        return posResult == .success && sizeResult == .success
     }
 
     @objc private func handleNoteCaptureNotification(_ notification: Notification) {
@@ -827,7 +966,8 @@ class ShadeAppDelegate: NSObject, NSApplicationDelegate {
 
     /// Show panel, recreating surface if needed (when backgrounded)
     /// Note: Call capturePreviousFocusedApp() BEFORE this if you need focus restoration
-    func showPanelWithSurface() {
+    /// - Parameter skipPositioning: If true, don't reposition panel (used for sidebar mode)
+    func showPanelWithSurface(skipPositioning: Bool = false) {
         if isBackgrounded, let terminalView = terminalView {
             Log.debug("Recreating surface from backgrounded state")
             terminalView.recreateSurface(
@@ -836,7 +976,7 @@ class ShadeAppDelegate: NSObject, NSApplicationDelegate {
             )
             isBackgrounded = false
         }
-        panel?.show()
+        panel?.show(skipPositioning: skipPositioning)
     }
 
     /// Background the app - destroy surface but keep running

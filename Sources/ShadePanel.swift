@@ -169,10 +169,15 @@ class ShadePanel: NSPanel {
         }
     }
 
-    func show() {
-        Log.debug("Show called")
-        // Position before showing
-        positionCentered()
+    /// Show the panel
+    /// - Parameter skipPositioning: If true, don't reposition (used for sidebar mode where position is set beforehand)
+    func show(skipPositioning: Bool = false) {
+        Log.debug("Show called (skipPositioning: \(skipPositioning))")
+
+        // Position before showing (unless caller already positioned, e.g., sidebar mode)
+        if !skipPositioning {
+            positionCentered()
+        }
 
         // Make visible and key
         makeKeyAndOrderFront(nil)
