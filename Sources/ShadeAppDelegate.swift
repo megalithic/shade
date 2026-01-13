@@ -36,6 +36,23 @@ class ShadeAppDelegate: NSObject, NSApplicationDelegate {
     /// Flag to track if we're in backgrounded state (surface destroyed, awaiting new command)
     private var isBackgrounded = false
 
+    /// Current panel display mode (floating, sidebar-left, sidebar-right)
+    private var currentMode: PanelMode = .floating
+
+    /// Bundle ID of companion app when in sidebar mode (for restoration)
+    private var companionBundleID: String?
+
+    /// Previously focused app (to restore focus when hiding)
+    private var previousFocusedApp: NSRunningApplication?
+
+    /// Last known non-Shade frontmost app (tracked proactively via workspace notifications)
+    /// This is updated whenever ANY app becomes frontmost, ensuring we always have a valid
+    /// context target even if the panel is already visible when capture is triggered.
+    private var lastNonShadeFrontApp: NSRunningApplication?
+
+    /// Workspace notification observer token
+    private var workspaceObserver: NSObjectProtocol?
+
     /// Menubar status item manager
     private var menuBarManager: MenuBarManager?
 
@@ -84,6 +101,9 @@ class ShadeAppDelegate: NSObject, NSApplicationDelegate {
 
         // Listen for toggle notifications from Hammerspoon
         setupNotificationListener()
+
+        // Setup workspace observer to track frontmost app proactively
+        setupWorkspaceObserver()
 
         // Setup menubar status item
         setupMenuBarItem()
@@ -279,6 +299,45 @@ class ShadeAppDelegate: NSObject, NSApplicationDelegate {
         }
     }
 
+    // MARK: - Workspace Observer (for proactive app tracking)
+
+    /// Setup workspace observer to track frontmost app changes
+    /// This proactively tracks the last non-Shade app, solving timing issues with context capture
+    private func setupWorkspaceObserver() {
+        let workspace = NSWorkspace.shared
+        let center = workspace.notificationCenter
+
+        workspaceObserver = center.addObserver(
+            forName: NSWorkspace.didActivateApplicationNotification,
+            object: nil,
+            queue: .main
+        ) { [weak self] notification in
+            guard let self = self else { return }
+
+            // Get the app that just became frontmost
+            guard let userInfo = notification.userInfo,
+                  let app = userInfo[NSWorkspace.applicationUserInfoKey] as? NSRunningApplication else {
+                return
+            }
+
+            // Track it if it's not Shade
+            let isShade = app.bundleIdentifier == Bundle.main.bundleIdentifier
+            if !isShade {
+                self.lastNonShadeFrontApp = app
+                Log.debug("Tracked frontmost app: \(app.localizedName ?? "unknown") (\(app.bundleIdentifier ?? "?"))")
+            }
+        }
+
+        // Initialize with current frontmost app (if not Shade)
+        if let frontApp = workspace.frontmostApplication,
+           frontApp.bundleIdentifier != Bundle.main.bundleIdentifier {
+            lastNonShadeFrontApp = frontApp
+            Log.debug("Initial frontmost app: \(frontApp.localizedName ?? "unknown")")
+        }
+
+        Log.debug("Workspace observer configured")
+    }
+
     // MARK: - Notification Listener (for Hammerspoon integration)
 
     private func setupNotificationListener() {
@@ -341,6 +400,34 @@ class ShadeAppDelegate: NSObject, NSApplicationDelegate {
             object: nil
         )
 
+        // Sidebar mode notifications (separate names to avoid userInfo issues)
+        center.addObserver(
+            self,
+            selector: #selector(handleModeFloatingNotification),
+            name: NSNotification.Name("io.shade.mode.floating"),
+            object: nil
+        )
+        center.addObserver(
+            self,
+            selector: #selector(handleModeSidebarLeftNotification),
+            name: NSNotification.Name("io.shade.mode.sidebar-left"),
+            object: nil
+        )
+        center.addObserver(
+            self,
+            selector: #selector(handleModeSidebarRightNotification),
+            name: NSNotification.Name("io.shade.mode.sidebar-right"),
+            object: nil
+        )
+
+        // Legacy mode.set notification (in case old Hammerspoon config is used)
+        center.addObserver(
+            self,
+            selector: #selector(handleModeSetNotification),
+            name: NSNotification.Name("io.shade.mode.set"),
+            object: nil
+        )
+
         Log.debug("Listening for IPC notifications")
     }
 
@@ -349,12 +436,14 @@ class ShadeAppDelegate: NSObject, NSApplicationDelegate {
         if isPanelVisible {
             hidePanel()
         } else {
+            capturePreviousFocusedApp()
             showPanelWithSurface()
         }
     }
 
     @objc private func handleShowNotification(_ notification: Notification) {
         Log.debug("IPC: show")
+        capturePreviousFocusedApp()
         showPanelWithSurface()
     }
 
@@ -369,8 +458,98 @@ class ShadeAppDelegate: NSObject, NSApplicationDelegate {
         NSApp.terminate(nil)
     }
 
+    @objc private func handleModeFloatingNotification(_ notification: Notification) {
+        Log.debug("IPC: mode.floating")
+        exitSidebarMode()
+        showPanelWithSurface()
+    }
+
+    @objc private func handleModeSidebarLeftNotification(_ notification: Notification) {
+        Log.debug("IPC: mode.sidebar-left")
+        enterSidebarMode(.sidebarLeft)
+    }
+
+    @objc private func handleModeSidebarRightNotification(_ notification: Notification) {
+        Log.debug("IPC: mode.sidebar-right")
+        enterSidebarMode(.sidebarRight)
+    }
+
+    @objc private func handleModeSetNotification(_ notification: Notification) {
+        // Legacy handler for old Hammerspoon configs that use userInfo
+        guard let userInfo = notification.userInfo,
+              let modeStr = userInfo["mode"] as? String,
+              let mode = PanelMode(rawValue: modeStr) else {
+            Log.warn("IPC: mode.set - invalid or missing mode parameter (use io.shade.mode.<name> instead)")
+            return
+        }
+
+        Log.debug("IPC: mode.set to \(mode.rawValue) (legacy)")
+
+        if mode == .floating {
+            exitSidebarMode()
+            showPanelWithSurface()
+        } else {
+            enterSidebarMode(mode)
+        }
+    }
+
+    // MARK: - Sidebar Mode
+
+    /// Enter sidebar mode - dock panel to edge and resize companion app
+    private func enterSidebarMode(_ mode: PanelMode) {
+        guard mode != .floating else { return }
+
+        // Capture the frontmost app (used for both focus restoration and companion tracking)
+        let frontApp = capturePreviousFocusedApp()
+        companionBundleID = frontApp?.bundleIdentifier
+        currentMode = mode
+
+        Log.debug("Entering sidebar mode: \(mode.rawValue), companion: \(companionBundleID ?? "none")")
+
+        // Position panel at edge with sidebar width
+        panel?.positionSidebar(mode: mode, width: appConfig.sidebarWidth)
+
+        // Show the panel
+        showPanelWithSurface()
+
+        // Notify Hammerspoon to resize the companion app
+        let userInfo: [String: Any] = [
+            "edge": mode.rawValue,
+            "width": panel?.frame.width ?? 0,
+            "companionBundleID": companionBundleID ?? ""
+        ]
+        DistributedNotificationCenter.default().post(
+            name: NSNotification.Name("io.shade.sidebar.enter"),
+            object: nil,
+            userInfo: userInfo as [AnyHashable: Any]
+        )
+    }
+
+    /// Exit sidebar mode - notify Hammerspoon to restore companion app
+    private func exitSidebarMode() {
+        guard currentMode != .floating else { return }
+
+        Log.debug("Exiting sidebar mode")
+
+        // Notify Hammerspoon to restore companion window
+        DistributedNotificationCenter.default().post(
+            name: NSNotification.Name("io.shade.sidebar.exit"),
+            object: nil
+        )
+
+        currentMode = .floating
+        companionBundleID = nil
+    }
+
     @objc private func handleNoteCaptureNotification(_ notification: Notification) {
         Log.debug("IPC: note.capture")
+
+        // CRITICAL: Capture frontmost app BEFORE any async work
+        // This single capture serves two purposes:
+        // 1. Context gathering (what app/content to capture from)
+        // 2. Focus restoration (where to return focus when hiding)
+        let targetApp = capturePreviousFocusedApp()
+        Log.debug("Target app for context: \(targetApp?.localizedName ?? "none")")
 
         // Resize panel to capture size (smaller)
         panel?.resize(width: appConfig.captureWidth, height: appConfig.captureHeight)
@@ -378,7 +557,7 @@ class ShadeAppDelegate: NSObject, NSApplicationDelegate {
         // Always create a new capture, even if panel is already visible
         // User explicitly requested a capture, so honor that intent
         Task {
-            let gatheredContext = await ContextGatherer.shared.gather()
+            let gatheredContext = await ContextGatherer.shared.gather(targetApp: targetApp)
             Log.debug("Gathered context: \(gatheredContext.appType ?? "unknown") from \(gatheredContext.appName ?? "unknown")")
 
             // Write context for obsidian.nvim templates to read
@@ -412,6 +591,9 @@ class ShadeAppDelegate: NSObject, NSApplicationDelegate {
 
     @objc private func handleDailyNoteNotification(_ notification: Notification) {
         Log.debug("IPC: note.daily")
+
+        // Capture previous app for focus restoration
+        capturePreviousFocusedApp()
 
         // Resize panel to daily note size (larger)
         panel?.resize(width: appConfig.dailyWidth, height: appConfig.dailyHeight)
@@ -531,6 +713,12 @@ class ShadeAppDelegate: NSObject, NSApplicationDelegate {
         stateMonitorTask?.cancel()
         stateMonitorTask = nil
 
+        // Remove workspace observer
+        if let observer = workspaceObserver {
+            NSWorkspace.shared.notificationCenter.removeObserver(observer)
+            workspaceObserver = nil
+        }
+
         // Remove menubar item
         menuBarManager?.teardown()
         menuBarManager = nil
@@ -585,7 +773,18 @@ class ShadeAppDelegate: NSObject, NSApplicationDelegate {
 
     /// Hide the panel
     func hidePanel() {
+        // Exit sidebar mode when hiding (restore companion window)
+        if currentMode != .floating {
+            exitSidebarMode()
+        }
         panel?.hide()
+
+        // Restore focus to the previously focused app
+        if let prevApp = previousFocusedApp {
+            Log.debug("Restoring focus to: \(prevApp.localizedName ?? "unknown")")
+            prevApp.activate()
+            previousFocusedApp = nil
+        }
     }
 
     /// Check if panel is visible
@@ -593,12 +792,46 @@ class ShadeAppDelegate: NSObject, NSApplicationDelegate {
         return panel?.isVisible ?? false
     }
 
+    /// Capture the frontmost app for later focus restoration
+    /// Call this BEFORE any async work or showing the panel
+    /// Returns the captured app (also stored in previousFocusedApp)
+    ///
+    /// This function uses `lastNonShadeFrontApp` (tracked proactively via workspace notifications)
+    /// as a fallback, ensuring we always have a valid app for context gathering even if:
+    /// - The panel is already visible
+    /// - Shade has already become frontmost by the time this is called
+    @discardableResult
+    private func capturePreviousFocusedApp() -> NSRunningApplication? {
+        // Only update previousFocusedApp if panel is not visible (avoid overwriting during toggle)
+        if !isPanelVisible {
+            let frontApp = NSWorkspace.shared.frontmostApplication
+            // Don't save Shade itself as the previous app
+            if frontApp?.bundleIdentifier != Bundle.main.bundleIdentifier {
+                previousFocusedApp = frontApp
+                Log.debug("Captured previous app: \(frontApp?.localizedName ?? "none")")
+            } else if let tracked = lastNonShadeFrontApp {
+                // Shade is frontmost (timing issue) - use proactively tracked app
+                previousFocusedApp = tracked
+                Log.debug("Captured previous app (via tracking): \(tracked.localizedName ?? "none")")
+            }
+        }
+
+        // Always return a valid app for context gathering
+        // Priority: previousFocusedApp (explicit capture) > lastNonShadeFrontApp (proactive tracking)
+        let result = previousFocusedApp ?? lastNonShadeFrontApp
+        if result == nil {
+            Log.warn("No previous app available for context - this should not happen")
+        }
+        return result
+    }
+
     /// Show panel, recreating surface if needed (when backgrounded)
+    /// Note: Call capturePreviousFocusedApp() BEFORE this if you need focus restoration
     func showPanelWithSurface() {
         if isBackgrounded, let terminalView = terminalView {
             Log.debug("Recreating surface from backgrounded state")
             terminalView.recreateSurface(
-                command: appConfig.command,
+                command: appConfig.effectiveCommand,
                 workingDirectory: appConfig.workingDirectory
             )
             isBackgrounded = false
@@ -712,16 +945,21 @@ class ShadeAppDelegate: NSObject, NSApplicationDelegate {
         let terminalView = TerminalView(
             frame: panelRect,
             ghosttyApp: app,
-            command: appConfig.command,
+            command: appConfig.effectiveCommand,
             workingDirectory: appConfig.workingDirectory
         )
         panel.contentView = terminalView
         self.terminalView = terminalView
         self.panel = panel
 
-        // Show panel unless startHidden is set
+        // Apply initial mode from config and show unless startHidden is set
         if !appConfig.startHidden {
-            panel.show()
+            if appConfig.panelMode != .floating {
+                // Start in sidebar mode
+                enterSidebarMode(appConfig.panelMode)
+            } else {
+                panel.show()
+            }
         } else {
             Log.debug("Starting hidden")
         }

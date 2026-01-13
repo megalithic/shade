@@ -5,7 +5,7 @@ import AppKit
 class ShadePanel: NSPanel {
 
     // MARK: - Properties
-    
+
     /// Screen mode for positioning (injected from AppConfig)
     var screenMode: ScreenMode = .primary
 
@@ -101,6 +101,51 @@ class ShadePanel: NSPanel {
         Log.debug("Positioned panel centered at (\(Int(x)), \(Int(y)))")
     }
 
+    /// Position panel at screen edge for sidebar mode
+    /// - Parameters:
+    ///   - mode: The sidebar mode (.sidebarLeft or .sidebarRight)
+    ///   - width: Width as percentage (0.0-1.0) or pixels (> 1.0)
+    func positionSidebar(mode: PanelMode, width: Double) {
+        guard let screen = targetScreen else {
+            Log.warn("No screen found for sidebar positioning")
+            return
+        }
+
+        let screenFrame = screen.visibleFrame
+
+        // Calculate sidebar width
+        let sidebarWidth: CGFloat
+        if width <= 1.0 {
+            sidebarWidth = screenFrame.width * CGFloat(width)
+        } else {
+            sidebarWidth = CGFloat(width)
+        }
+
+        // Full screen height
+        let sidebarHeight = screenFrame.height
+
+        // Position based on mode
+        let x: CGFloat
+        switch mode {
+        case .sidebarLeft:
+            x = screenFrame.origin.x
+        case .sidebarRight:
+            x = screenFrame.origin.x + screenFrame.width - sidebarWidth
+        case .floating:
+            // Shouldn't call this for floating mode, but handle gracefully
+            positionCentered()
+            return
+        }
+
+        let y = screenFrame.origin.y
+
+        // Set frame (position + size in one call)
+        let newFrame = NSRect(x: x, y: y, width: sidebarWidth, height: sidebarHeight)
+        setFrame(newFrame, display: true)
+
+        Log.debug("Positioned panel as \(mode.rawValue) at (\(Int(x)), \(Int(y))) size \(Int(sidebarWidth))x\(Int(sidebarHeight))")
+    }
+
     // MARK: - Key Window Behavior
 
     // Allow the panel to become key (for keyboard input) even though it's non-activating
@@ -147,36 +192,36 @@ class ShadePanel: NSPanel {
         orderOut(nil)
         Log.debug("Panel hidden")
     }
-    
+
     /// Resize panel to specified dimensions and re-center
     /// - Parameters:
     ///   - width: Width as percentage (0.0-1.0) or pixels (> 1.0)
     ///   - height: Height as percentage (0.0-1.0) or pixels (> 1.0)
     func resize(width: Double, height: Double) {
         guard let screen = targetScreen else { return }
-        
+
         let screenFrame = screen.visibleFrame
-        
+
         let newWidth: CGFloat
         if width <= 1.0 {
             newWidth = screenFrame.width * CGFloat(width)
         } else {
             newWidth = CGFloat(width)
         }
-        
+
         let newHeight: CGFloat
         if height <= 1.0 {
             newHeight = screenFrame.height * CGFloat(height)
         } else {
             newHeight = CGFloat(height)
         }
-        
+
         let newSize = NSSize(width: newWidth, height: newHeight)
         setContentSize(newSize)
-        
+
         // Re-center after resize
         positionCentered()
-        
+
         Log.debug("Resized panel to \(Int(newWidth))x\(Int(newHeight))")
     }
 }

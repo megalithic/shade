@@ -41,16 +41,35 @@ enum ScreenMode: String {
     case focused = "focused"   // Use screen with keyboard focus
 }
 
+/// Panel display mode
+enum PanelMode: String, CaseIterable {
+    case floating = "floating"           // Centered, floating above other windows (default)
+    case sidebarLeft = "sidebar-left"    // Docked to left edge of screen
+    case sidebarRight = "sidebar-right"  // Docked to right edge of screen
+}
+
 /// Configuration for shade, parsed from command-line args
 struct AppConfig {
     /// Width as percentage of screen (0.0-1.0) or absolute pixels if > 1
     var width: Double = 0.45
     /// Height as percentage of screen (0.0-1.0) or absolute pixels if > 1
     var height: Double = 0.5
-    /// Command to run in terminal (default: user's shell)
+    /// Command to run in terminal (default: nvim with socket)
+    /// Uses StateDirectory.nvimSocketPath for RPC communication
     var command: String? = nil
     /// Working directory
     var workingDirectory: String? = nil
+    
+    /// Get effective command - returns configured command or default nvim with socket
+    var effectiveCommand: String {
+        if let cmd = command {
+            return cmd
+        }
+        // Default: nvim with socket for RPC, cleanup stale socket first
+        // SHADE=1 env var lets nvim config detect it's running in Shade
+        let socketPath = StateDirectory.nvimSocketPath
+        return "/usr/bin/env zsh -c 'rm -f \(socketPath); SHADE=1 exec nvim --listen \(socketPath)'"
+    }
     /// Start hidden (wait for toggle signal)
     var startHidden: Bool = false
     /// Enable verbose logging
@@ -68,6 +87,13 @@ struct AppConfig {
     var captureWidth: Double = 0.4
     /// Capture note panel height
     var captureHeight: Double = 0.4
+
+    // MARK: - Sidebar Mode Configuration
+
+    /// Panel display mode (floating, sidebar-left, sidebar-right)
+    var panelMode: PanelMode = .floating
+    /// Sidebar width as percentage of screen (0.0-1.0) or absolute pixels if > 1
+    var sidebarWidth: Double = 0.35
 
     // MARK: - LLM Configuration
 
@@ -137,6 +163,17 @@ struct AppConfig {
                     config.captureHeight = val
                     i += 1
                 }
+            // Sidebar mode options
+            case "--mode", "-m":
+                if i + 1 < args.count, let mode = PanelMode(rawValue: args[i + 1]) {
+                    config.panelMode = mode
+                    i += 1
+                }
+            case "--sidebar-width":
+                if i + 1 < args.count, let val = Double(args[i + 1]) {
+                    config.sidebarWidth = val
+                    i += 1
+                }
             // LLM options
             case "--no-llm":
                 config.noLLM = true
@@ -182,18 +219,25 @@ struct AppConfig {
           -v, --verbose            Enable verbose logging
           --help                   Show this help
 
+        Sidebar Mode:
+          -m, --mode <mode>        Panel mode: floating (default), sidebar-left, sidebar-right
+          --sidebar-width <value>  Sidebar width (default: 0.35)
+
         LLM Options:
           --no-llm                 Disable LLM features entirely
           --llm-backend <backend>  LLM backend: "mlx" (default), "ollama"
           --llm-model <model>      Model ID (e.g., "mlx-community/Qwen3-8B-Instruct-4bit")
 
         Toggle via distributed notification:
-          io.shade.toggle          Toggle visibility
-          io.shade.show            Show panel
-          io.shade.hide            Hide panel
-          io.shade.quit            Terminate shade
-          io.shade.note.capture    Open quick capture
-          io.shade.note.daily      Open daily note
+          io.shade.toggle              Toggle visibility
+          io.shade.show                Show panel
+          io.shade.hide                Hide panel
+          io.shade.quit                Terminate shade
+          io.shade.note.capture        Open quick capture
+          io.shade.note.daily          Open daily note
+          io.shade.mode.floating       Switch to floating mode
+          io.shade.mode.sidebar-left   Switch to left sidebar mode
+          io.shade.mode.sidebar-right  Switch to right sidebar mode
 
         Examples:
           shade --width 0.5 --height 0.4 --command "nvim ~/notes/capture.md"

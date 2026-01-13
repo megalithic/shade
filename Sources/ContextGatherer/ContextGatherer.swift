@@ -134,13 +134,19 @@ public final class ContextGatherer: @unchecked Sendable {
     /// This is the main entry point. It automatically detects the app type
     /// and uses the appropriate method to gather context.
     ///
-    /// - Parameter nvimSocketDir: Directory containing nvim socket files (default: /tmp/nvim-sockets)
+    /// - Parameters:
+    ///   - nvimSocketDir: Directory containing nvim socket files (default: /tmp/nvim-sockets)
+    ///   - targetApp: Optional pre-captured app to use instead of querying frontmost.
+    ///                Use this when calling from async contexts where frontmost might change.
     /// - Returns: GatheredContext with all available information
-    public func gather(nvimSocketDir: String = "/tmp/nvim-sockets") async -> GatheredContext {
+    public func gather(
+        nvimSocketDir: String = "/tmp/nvim-sockets",
+        targetApp: NSRunningApplication? = nil
+    ) async -> GatheredContext {
         let startTime = Date()
 
-        // Get frontmost app
-        guard let app = accessibilityHelper.getFrontmostApp() else {
+        // Use provided app or query frontmost
+        guard let app = targetApp ?? accessibilityHelper.getFrontmostApp() else {
             logger.warning("No frontmost app found")
             return makeEmptyContext()
         }
