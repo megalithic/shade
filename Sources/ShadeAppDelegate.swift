@@ -186,7 +186,18 @@ class ShadeAppDelegate: NSObject, NSApplicationDelegate {
                 NSApp.terminate(nil)
             }
 
+            // Wire up experimental settings callback
+            manager.onSettingsChanged = { [weak self] autoTrack, autoResize in
+                guard self != nil else { return }
+                Log.debug("Experimental settings changed: autoTrack=\(autoTrack), autoResize=\(autoResize)")
+                // Settings are read directly from UserDefaults when needed
+                // No additional wiring required - the workspace observer checks these values
+            }
+
             manager.setup()
+
+            // Log initial experimental settings
+            Log.debug("Experimental settings: autoTrack=\(manager.autoTrackCompanion), autoResize=\(manager.autoResizeCompanion)")
         }
 
         // Start monitoring nvim state for icon updates
@@ -329,6 +340,9 @@ class ShadeAppDelegate: NSObject, NSApplicationDelegate {
             if !isShade {
                 self.lastNonShadeFrontApp = app
                 Log.debug("Tracked frontmost app: \(app.localizedName ?? "unknown") (\(app.bundleIdentifier ?? "?"))")
+
+                // Experimental: Dynamic companion tracking in sidebar mode
+                self.handlePotentialCompanionChange(app)
             }
         }
 
@@ -436,10 +450,20 @@ class ShadeAppDelegate: NSObject, NSApplicationDelegate {
     }
 
     @objc private func handleToggleNotification(_ notification: Notification) {
-        Log.debug("IPC: toggle")
+        Log.debug("IPC: toggle (visible=\(isPanelVisible), focused=\(isShadeFocused))")
+
         if isPanelVisible {
-            hidePanel()
+            if isShadeFocused {
+                // Visible and focused → hide
+                hidePanel()
+            } else {
+                // Visible but not focused → focus (bring to front)
+                Log.debug("Focusing panel (was visible but not focused)")
+                panel?.makeKeyAndOrderFront(nil)
+                NSApp.activate(ignoringOtherApps: true)
+            }
         } else {
+            // Hidden → show and focus
             // Reset to floating mode when showing from hidden state
             // Sidebar mode is only valid when actively set via io.shade.mode.sidebar-*
             if currentMode != .floating {
@@ -471,6 +495,20 @@ class ShadeAppDelegate: NSObject, NSApplicationDelegate {
     @objc private func handleHideNotification(_ notification: Notification) {
         Log.debug("IPC: hide")
         hidePanel()
+    }
+
+    // MARK: - Panel Focus Handlers (for menubar icon)
+
+    @objc private func panelDidBecomeKey(_ notification: Notification) {
+        Task { @MainActor in
+            menuBarManager?.setFocused(true)
+        }
+    }
+
+    @objc private func panelDidResignKey(_ notification: Notification) {
+        Task { @MainActor in
+            menuBarManager?.setFocused(false)
+        }
     }
 
     @objc private func handleQuitNotification(_ notification: Notification) {
@@ -517,6 +555,89 @@ class ShadeAppDelegate: NSObject, NSApplicationDelegate {
     }
 
     // MARK: - Sidebar Mode
+
+    /// Handle a potential companion change (experimental feature)
+    /// Called when a non-Shade app becomes frontmost while in sidebar mode
+    private func handlePotentialCompanionChange(_ app: NSRunningApplication) {
+        // Only relevant in sidebar mode
+        guard currentMode != .floating else { return }
+
+        // Read settings directly from UserDefaults (thread-safe, avoids MainActor issues)
+        let autoTrack = UserDefaults.standard.bool(forKey: "shade.autoTrackCompanion")
+        let autoResize = UserDefaults.standard.bool(forKey: "shade.autoResizeCompanion")
+
+        // Check if auto-track is enabled
+        guard autoTrack else { return }
+
+        // Skip if this is already the current companion
+        guard app.bundleIdentifier != companionBundleID else { return }
+
+        Log.debug("Potential companion change: \(app.localizedName ?? "unknown") (autoTrack=\(autoTrack), autoResize=\(autoResize))")
+
+        // If auto-resize is also enabled, update the companion and resize
+        if autoResize {
+            // Restore previous companion first
+            if let prevBundleID = companionBundleID,
+               let prevFrame = companionOriginalFrame,
+               let prevApp = NSRunningApplication.runningApplications(withBundleIdentifier: prevBundleID).first {
+                _ = setWindowFrame(for: prevApp, frame: prevFrame)
+                Log.debug("Restored previous companion: \(prevApp.localizedName ?? "unknown")")
+            }
+
+            // Update to new companion
+            companionBundleID = app.bundleIdentifier
+            companionOriginalFrame = getWindowFrame(for: app)
+
+            // Resize new companion
+            if companionOriginalFrame != nil {
+                resizeCompanionForSidebar(app: app, mode: currentMode)
+            }
+        } else {
+            // Just track, don't resize (useful for next sidebar entry)
+            Log.debug("Tracking new potential companion (no resize): \(app.localizedName ?? "unknown")")
+            // Note: We don't update companionBundleID here - that only happens on sidebar entry
+            // or when autoResize is enabled
+        }
+    }
+
+    /// Resize a companion app to fit alongside Shade in sidebar mode
+    private func resizeCompanionForSidebar(app: NSRunningApplication, mode: PanelMode) {
+        guard let screen = NSScreen.main ?? NSScreen.screens.first else { return }
+        let screenFrame = screen.visibleFrame
+
+        let sidebarWidth: CGFloat
+        if appConfig.sidebarWidth <= 1.0 {
+            sidebarWidth = screenFrame.width * CGFloat(appConfig.sidebarWidth)
+        } else {
+            sidebarWidth = CGFloat(appConfig.sidebarWidth)
+        }
+
+        let companionFrame: CGRect
+        switch mode {
+        case .sidebarLeft:
+            companionFrame = CGRect(
+                x: screenFrame.origin.x + sidebarWidth,
+                y: screenFrame.origin.y,
+                width: screenFrame.width - sidebarWidth,
+                height: screenFrame.height
+            )
+        case .sidebarRight:
+            companionFrame = CGRect(
+                x: screenFrame.origin.x,
+                y: screenFrame.origin.y,
+                width: screenFrame.width - sidebarWidth,
+                height: screenFrame.height
+            )
+        case .floating:
+            return
+        }
+
+        if setWindowFrame(for: app, frame: companionFrame) {
+            Log.debug("Resized new companion to: \(companionFrame.debugDescription)")
+        } else {
+            Log.warn("Failed to resize new companion")
+        }
+    }
 
     /// Enter sidebar mode - dock panel to edge and resize companion app
     /// Shade handles ALL window management directly (no Hammerspoon round-trip)
@@ -1008,10 +1129,27 @@ class ShadeAppDelegate: NSObject, NSApplicationDelegate {
 
     /// Hide the panel
     func hidePanel() {
-        // Exit sidebar mode when hiding (restore companion window)
-        if currentMode != .floating {
-            exitSidebarMode()
+        // Track if we were in sidebar mode (for potential restoration)
+        let wasInSidebarMode = currentMode != .floating
+
+        // Restore companion window if in sidebar mode, but DON'T reset currentMode yet
+        // This allows handleToggleNotification to properly detect and handle the mode reset
+        if wasInSidebarMode {
+            // Restore companion window to original frame
+            if let bundleID = companionBundleID,
+               let originalFrame = companionOriginalFrame,
+               let app = NSRunningApplication.runningApplications(withBundleIdentifier: bundleID).first {
+                if setWindowFrame(for: app, frame: originalFrame) {
+                    Log.debug("Restored companion to original frame: \(originalFrame.debugDescription)")
+                } else {
+                    Log.warn("Failed to restore companion window")
+                }
+            }
+            // Clear companion tracking (companion restored, but mode stays for toggle detection)
+            companionBundleID = nil
+            companionOriginalFrame = nil
         }
+
         panel?.hide()
 
         // Restore focus to the previously focused app
@@ -1025,6 +1163,14 @@ class ShadeAppDelegate: NSObject, NSApplicationDelegate {
     /// Check if panel is visible
     var isPanelVisible: Bool {
         return panel?.isVisible ?? false
+    }
+
+    /// Check if Shade panel is focused (has keyboard input)
+    /// This checks both that the panel is the key window AND that the terminal is first responder
+    var isShadeFocused: Bool {
+        guard let panel = panel, panel.isKeyWindow else { return false }
+        // Verify terminal view is actually receiving input
+        return panel.firstResponder === terminalView
     }
 
     /// Capture the frontmost app for later focus restoration
@@ -1187,6 +1333,24 @@ class ShadeAppDelegate: NSObject, NSApplicationDelegate {
         panel.contentView = terminalView
         self.terminalView = terminalView
         self.panel = panel
+
+        // Configure focus border from config
+        let focusBorderConfig = ShadeConfig.shared.window?.focusBorder
+        panel.configureFocusBorder(config: focusBorderConfig)
+
+        // Observe panel focus changes to update menubar icon
+        NotificationCenter.default.addObserver(
+            self,
+            selector: #selector(panelDidBecomeKey),
+            name: NSWindow.didBecomeKeyNotification,
+            object: panel
+        )
+        NotificationCenter.default.addObserver(
+            self,
+            selector: #selector(panelDidResignKey),
+            name: NSWindow.didResignKeyNotification,
+            object: panel
+        )
 
         // Apply initial mode from config and show unless startHidden is set
         if !appConfig.startHidden {

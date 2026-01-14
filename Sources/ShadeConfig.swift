@@ -1,3 +1,4 @@
+import AppKit
 import Foundation
 
 /// Configuration for Shade, loaded from ~/.config/shade/config.json
@@ -146,10 +147,103 @@ struct WindowConfig: Codable {
     /// Position: "center", "right", "left"
     var position: String = "center"
 
+    /// Focus border configuration
+    var focusBorder: FocusBorderConfig?
+
     enum CodingKeys: String, CodingKey {
         case widthPercent = "width_percent"
         case heightPercent = "height_percent"
         case position
+        case focusBorder = "focus_border"
+    }
+}
+
+// MARK: - Focus Border Configuration
+
+/// Configuration for the visual border shown when Shade panel has focus
+struct FocusBorderConfig: Codable {
+    /// Whether to show focus border
+    var enabled: Bool = true
+
+    /// Border width in points
+    var width: Double = 2.0
+
+    /// Border corner radius in points (0 = square corners)
+    var cornerRadius: Double = 8.0
+
+    /// Border color as hex string (e.g., "#83A598" for Everforest aqua)
+    /// Supports formats: "#RGB", "#RRGGBB", "#RRGGBBAA"
+    var color: String = "#83A598"
+
+    /// Opacity of the border (0.0 - 1.0)
+    var opacity: Double = 0.8
+
+    /// Whether to animate the border appearance
+    var animated: Bool = true
+
+    /// Animation duration in seconds
+    var animationDuration: Double = 0.15
+
+    /// Menu bar icon stroke color when focused (hex string, e.g., "#E68C59" for Everforest orange)
+    /// Applies to outline/stroke rendering of the ghost icon
+    var menubarStrokeColor: String = "#E68C59"
+
+    enum CodingKeys: String, CodingKey {
+        case enabled
+        case width
+        case cornerRadius = "corner_radius"
+        case color
+        case opacity
+        case animated
+        case animationDuration = "animation_duration"
+        case menubarStrokeColor = "menubar_stroke_color"
+    }
+
+    /// Parse hex color string to NSColor
+    func parsedColor() -> NSColor {
+        return Self.parseHexColor(color, opacity: opacity)
+    }
+
+    /// Parse menubar stroke color (full opacity by default)
+    func parsedMenubarStrokeColor() -> NSColor {
+        return Self.parseHexColor(menubarStrokeColor, opacity: 1.0)
+    }
+
+    /// Helper to parse hex color strings
+    /// - Parameters:
+    ///   - hexString: Color in #RGB, #RRGGBB, or #RRGGBBAA format
+    ///   - opacity: Opacity multiplier (0.0-1.0)
+    /// - Returns: Parsed NSColor or fallback color
+    static func parseHexColor(_ hexString: String, opacity: Double) -> NSColor {
+        var hex = hexString.trimmingCharacters(in: .whitespacesAndNewlines)
+        if hex.hasPrefix("#") {
+            hex.removeFirst()
+        }
+
+        var rgb: UInt64 = 0
+        Scanner(string: hex).scanHexInt64(&rgb)
+
+        switch hex.count {
+        case 3: // RGB
+            let r = Double((rgb >> 8) & 0xF) / 15.0
+            let g = Double((rgb >> 4) & 0xF) / 15.0
+            let b = Double(rgb & 0xF) / 15.0
+            return NSColor(red: r, green: g, blue: b, alpha: opacity)
+        case 6: // RRGGBB
+            let r = Double((rgb >> 16) & 0xFF) / 255.0
+            let g = Double((rgb >> 8) & 0xFF) / 255.0
+            let b = Double(rgb & 0xFF) / 255.0
+            return NSColor(red: r, green: g, blue: b, alpha: opacity)
+        case 8: // RRGGBBAA
+            let r = Double((rgb >> 24) & 0xFF) / 255.0
+            let g = Double((rgb >> 16) & 0xFF) / 255.0
+            let b = Double((rgb >> 8) & 0xFF) / 255.0
+            let a = Double(rgb & 0xFF) / 255.0
+            return NSColor(red: r, green: g, blue: b, alpha: a * opacity)
+        default:
+            // Fallback to Everforest aqua
+            return NSColor(red: 0.514, green: 0.647, blue: 0.596, alpha: opacity)
+        }
     }
 }
 
