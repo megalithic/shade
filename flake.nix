@@ -5,11 +5,8 @@
     nixpkgs.url = "github:NixOS/nixpkgs/nixpkgs-unstable";
     flake-utils.url = "github:numtide/flake-utils";
 
-    # Ghostty source for building libghostty
-    ghostty = {
-      url = "github:ghostty-org/ghostty";
-      flake = false; # Don't use their flake outputs, just the source
-    };
+    # Use Ghostty's flake for proper GhosttyKit build (handles zon2nix deps)
+    ghostty.url = "github:ghostty-org/ghostty";
   };
 
   outputs =
@@ -27,58 +24,64 @@
         # Version from git or fallback
         version = self.shortRev or self.dirtyShortRev or "dev";
 
-        # Architecture-specific paths
-        zigTarget = if system == "aarch64-darwin" then "aarch64-macos" else "x86_64-macos";
-        xcfwArch = if system == "aarch64-darwin" then "macos-arm64" else "macos-x86_64";
+        # Get GhosttyKit from Ghostty's flake outputs
+        # Ghostty's flake exposes packages including the library we need
+        ghosttyFlake = ghostty.packages.${system} or {};
 
-        # Build GhosttyKit (libghostty) from source
+        # GhosttyKit derivation - extract from Ghostty or build with their flake
         ghosttyKit = pkgs.stdenv.mkDerivation {
           pname = "ghosttykit";
-          version = "0.0.0-dev";
+          version = "1.0.0";
 
-          src = ghostty;
+          # No source needed - we extract from the Ghostty build
+          dontUnpack = true;
+          dontBuild = true;
 
-          nativeBuildInputs = with pkgs; [
-            zig # Ghostty requires Zig 0.15+ as of late 2025
-            git # Required by ghostty's build.zig for version info
+          # Depend on Ghostty's build output
+          buildInputs = [
+            (ghosttyFlake.default or ghosttyFlake.ghostty or null)
           ];
-
-          # Darwin frameworks are now provided by stdenv via $SDKROOT
-          # No explicit buildInputs needed for frameworks
-
-          dontConfigure = true;
-          dontInstall = true;
-
-          buildPhase = ''
-            runHook preBuild
-
-            # Zig needs a writable cache
-            export ZIG_LOCAL_CACHE_DIR="$TMPDIR/zig-cache"
-            export ZIG_GLOBAL_CACHE_DIR="$TMPDIR/zig-global-cache"
-            mkdir -p $ZIG_LOCAL_CACHE_DIR $ZIG_GLOBAL_CACHE_DIR
-
-            # Build libghostty for macOS
-            zig build \
-              -Doptimize=ReleaseFast \
-              -Dtarget=${zigTarget} \
-              --verbose
-
-            runHook postBuild
-          '';
 
           installPhase = ''
             runHook preInstall
 
             mkdir -p $out/lib $out/include
 
-            # Copy the xcframework contents
-            XCFW="macos/GhosttyKit.xcframework/${xcfwArch}"
-            if [ -d "$XCFW" ]; then
-              cp "$XCFW/libghostty-fat.a" $out/lib/
-              cp -r "$XCFW/Headers"/* $out/include/
-            else
-              echo "ERROR: GhosttyKit.xcframework not found at $XCFW"
-              ls -la macos/
+            # Ghostty builds GhosttyKit as part of their macOS app
+            # The library should be available in Ghostty's output
+            GHOSTTY="${ghosttyFlake.default or ghosttyFlake.ghostty or ""}"
+
+            if [ -n "$GHOSTTY" ] && [ -d "$GHOSTTY" ]; then
+              echo "Looking for GhosttyKit in: $GHOSTTY"
+
+              # Check for framework in app bundle
+              if [ -d "$GHOSTTY/Applications/Ghostty.app/Contents/Frameworks/GhosttyKit.framework" ]; then
+                FWPATH="$GHOSTTY/Applications/Ghostty.app/Contents/Frameworks/GhosttyKit.framework"
+                echo "Found GhosttyKit.framework at: $FWPATH"
+
+                # Copy the static library (or dynamic library renamed)
+                if [ -f "$FWPATH/Versions/A/GhosttyKit" ]; then
+                  cp "$FWPATH/Versions/A/GhosttyKit" $out/lib/libghostty-fat.a
+                fi
+
+                # Copy headers
+                if [ -d "$FWPATH/Headers" ]; then
+                  cp -r "$FWPATH/Headers"/* $out/include/
+                fi
+              fi
+
+              # Also check for standalone library
+              find "$GHOSTTY" -name "libghostty*.a" -o -name "GhosttyKit*" 2>/dev/null | head -20 || true
+            fi
+
+            # Verify we got what we need
+            if [ ! -f "$out/lib/libghostty-fat.a" ]; then
+              echo "ERROR: Could not extract GhosttyKit from Ghostty build"
+              echo "This may be because Ghostty's macOS build doesn't produce a standalone library."
+              echo ""
+              echo "As a fallback, you can:"
+              echo "1. Build GhosttyKit manually and set GHOSTTYKIT_PATH"
+              echo "2. Download a pre-built GhosttyKit from Ghostty releases"
               exit 1
             fi
 
@@ -109,9 +112,6 @@
 
             # Build tools
             just
-
-            # Zig for building GhosttyKit from source
-            zig
           ];
 
           # Make GhosttyKit available
@@ -120,7 +120,6 @@
           shellHook = ''
             echo "👻 shade development shell (a lighter shade of ghost)"
             echo "Swift: $(swift --version 2>/dev/null | head -1 || echo 'not found')"
-            echo "Zig: $(zig version 2>/dev/null || echo 'not found')"
             echo ""
             echo "✓ GhosttyKit: $GHOSTTYKIT_PATH"
             echo ""
@@ -133,7 +132,7 @@
           '';
         };
 
-        # Lite shell without Zig (uses pre-built GhosttyKit)
+        # Lite shell (same as default now)
         devShells.lite = pkgs.mkShell {
           name = "shade-lite";
 
