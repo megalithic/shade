@@ -43,23 +43,8 @@
             git # Required by ghostty's build.zig for version info
           ];
 
-          # Darwin-specific dependencies
-          buildInputs = pkgs.lib.optionals pkgs.stdenv.isDarwin (
-            with pkgs.darwin.apple_sdk.frameworks;
-            [
-              Cocoa
-              Metal
-              MetalKit
-              CoreGraphics
-              CoreText
-              CoreVideo
-              IOSurface
-              Carbon
-              QuartzCore
-              Foundation
-              AppKit
-            ]
-          );
+          # Darwin frameworks are now provided by stdenv via $SDKROOT
+          # No explicit buildInputs needed for frameworks
 
           dontConfigure = true;
           dontInstall = true;
