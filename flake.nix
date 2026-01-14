@@ -39,7 +39,7 @@
           src = ghostty;
 
           nativeBuildInputs = with pkgs; [
-            zig_0_13
+            zig # Ghostty requires Zig 0.15+ as of late 2025
             git # Required by ghostty's build.zig for version info
           ];
 
@@ -111,7 +111,7 @@
             just
 
             # Zig for building GhosttyKit from source
-            zig_0_13
+            zig
           ];
 
           # Make GhosttyKit available
