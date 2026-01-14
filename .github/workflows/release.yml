@@ -22,6 +22,8 @@ jobs:
 
       - name: Install Nix
         uses: DeterminateSystems/nix-installer-action@main
+        with:
+          flakehub: false  # Don't require FlakeHub registration
 
       - name: Setup Nix cache
         uses: DeterminateSystems/magic-nix-cache-action@main
