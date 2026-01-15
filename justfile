@@ -59,7 +59,9 @@ release-info: release
     @otool -L .build/release/{{name}} | head -20
 
 # Install release binary to ~/.local/bin (or $PREFIX/bin)
-install: release
+install:
+    @rm -f .build/.lock
+    @just release
     @mkdir -p {{install_dir}}
     cp .build/release/{{name}} {{install_dir}}/{{name}}
     @echo "Installed to {{install_dir}}/{{name}}"

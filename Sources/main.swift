@@ -59,7 +59,7 @@ struct AppConfig {
     var command: String? = nil
     /// Working directory
     var workingDirectory: String? = nil
-    
+
     /// Get effective command - returns configured command or default nvim with socket
     var effectiveCommand: String {
         if let cmd = command {
@@ -76,24 +76,24 @@ struct AppConfig {
     var verbose: Bool = false
     /// Screen mode for positioning (primary or focused)
     var screenMode: ScreenMode = .primary
-    
+
     // MARK: - Size presets for different note types
-    
+
     /// Daily note panel width (larger for daily notes)
-    var dailyWidth: Double = 0.6
+    var dailyWidth: Double = 0.5
     /// Daily note panel height
-    var dailyHeight: Double = 0.6
+    var dailyHeight: Double = 0.5
     /// Capture note panel width (smaller for quick captures)
-    var captureWidth: Double = 0.4
+    var captureWidth: Double = 0.5
     /// Capture note panel height
-    var captureHeight: Double = 0.4
+    var captureHeight: Double = 0.5
 
     // MARK: - Sidebar Mode Configuration
 
     /// Panel display mode (floating, sidebar-left, sidebar-right)
     var panelMode: PanelMode = .floating
     /// Sidebar width as percentage of screen (0.0-1.0) or absolute pixels if > 1
-    var sidebarWidth: Double = 0.35
+    var sidebarWidth: Double = 0.33
 
     // MARK: - LLM Configuration
 

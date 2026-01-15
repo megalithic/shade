@@ -312,6 +312,7 @@ class ShadePanel: NSPanel {
         // Register for key window notifications
         NotificationCenter.default.removeObserver(self, name: NSWindow.didBecomeKeyNotification, object: self)
         NotificationCenter.default.removeObserver(self, name: NSWindow.didResignKeyNotification, object: self)
+        NotificationCenter.default.removeObserver(self, name: NSWindow.didResizeNotification, object: self)
 
         NotificationCenter.default.addObserver(
             self,
@@ -323,6 +324,12 @@ class ShadePanel: NSPanel {
             self,
             selector: #selector(windowDidResignKeyForBorder),
             name: NSWindow.didResignKeyNotification,
+            object: self
+        )
+        NotificationCenter.default.addObserver(
+            self,
+            selector: #selector(windowDidResizeForBorder),
+            name: NSWindow.didResizeNotification,
             object: self
         )
 
@@ -409,6 +416,10 @@ class ShadePanel: NSPanel {
     @objc private func windowDidResignKeyForBorder(_ notification: Notification) {
         hideFocusBorder()
         applyUnfocusedDim()
+    }
+
+    @objc private func windowDidResizeForBorder(_ notification: Notification) {
+        updateBorderFrame()
     }
 
     /// Show the focus border (animate if configured)
