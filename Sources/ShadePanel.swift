@@ -50,6 +50,9 @@ class ShadePanel: NSPanel {
     /// Focus border configuration (nil = disabled)
     var focusBorderConfig: FocusBorderConfig?
 
+    /// Opacity when unfocused (nil = no dimming, 1.0 = no dim, 0.5 = 50% opacity)
+    var dimUnfocusedOpacity: Double?
+
     /// The border layer for focus indication
     private var borderLayer: CALayer?
 
@@ -400,10 +403,12 @@ class ShadePanel: NSPanel {
 
     @objc private func windowDidBecomeKeyForBorder(_ notification: Notification) {
         showFocusBorder()
+        restoreOpacity()
     }
 
     @objc private func windowDidResignKeyForBorder(_ notification: Notification) {
         hideFocusBorder()
+        applyUnfocusedDim()
     }
 
     /// Show the focus border (animate if configured)
@@ -441,6 +446,32 @@ class ShadePanel: NSPanel {
         }
 
         Log.debug("Focus border hidden")
+    }
+
+    // MARK: - Unfocused Dimming
+
+    /// Apply dim effect when panel loses focus
+    private func applyUnfocusedDim() {
+        guard let opacity = dimUnfocusedOpacity, opacity < 1.0 else { return }
+
+        NSAnimationContext.runAnimationGroup { context in
+            context.duration = 0.15
+            context.timingFunction = CAMediaTimingFunction(name: .easeIn)
+            self.animator().alphaValue = CGFloat(opacity)
+        }
+        Log.debug("Applied unfocused dim: \(opacity)")
+    }
+
+    /// Restore full opacity when panel gains focus
+    private func restoreOpacity() {
+        guard dimUnfocusedOpacity != nil else { return }
+
+        NSAnimationContext.runAnimationGroup { context in
+            context.duration = 0.15
+            context.timingFunction = CAMediaTimingFunction(name: .easeOut)
+            self.animator().alphaValue = 1.0
+        }
+        Log.debug("Restored full opacity")
     }
 
     deinit {

@@ -1338,6 +1338,9 @@ class ShadeAppDelegate: NSObject, NSApplicationDelegate {
         let focusBorderConfig = ShadeConfig.shared.window?.focusBorder
         panel.configureFocusBorder(config: focusBorderConfig)
 
+        // Configure unfocused dimming from config
+        panel.dimUnfocusedOpacity = ShadeConfig.shared.window?.dimUnfocused
+
         // Observe panel focus changes to update menubar icon
         NotificationCenter.default.addObserver(
             self,

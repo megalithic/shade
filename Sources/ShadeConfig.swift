@@ -86,10 +86,10 @@ struct LLMConfig: Codable {
         case backend
         case model
         case preset
-        case maxTokens = "max_tokens"
+        case maxTokens
         case temperature
-        case topP = "top_p"
-        case idleTimeout = "idle_timeout"
+        case topP
+        case idleTimeout
     }
 }
 
@@ -108,10 +108,10 @@ struct CaptureConfig: Codable {
     var placeholderSuffix: String = " -->"
 
     enum CodingKeys: String, CodingKey {
-        case workingDirectory = "working_directory"
-        case asyncEnrichment = "async_enrichment"
-        case placeholderPrefix = "placeholder_prefix"
-        case placeholderSuffix = "placeholder_suffix"
+        case workingDirectory
+        case asyncEnrichment
+        case placeholderPrefix
+        case placeholderSuffix
     }
 
     /// Get working directory, falling back to environment variable
@@ -150,11 +150,16 @@ struct WindowConfig: Codable {
     /// Focus border configuration
     var focusBorder: FocusBorderConfig?
 
+    /// Opacity when panel is unfocused (0.0-1.0)
+    /// If nil/absent, no dimming occurs. 1.0 = fully opaque (no dim), 0.5 = 50% opacity
+    var dimUnfocused: Double?
+
     enum CodingKeys: String, CodingKey {
-        case widthPercent = "width_percent"
-        case heightPercent = "height_percent"
+        case widthPercent
+        case heightPercent
         case position
-        case focusBorder = "focus_border"
+        case focusBorder
+        case dimUnfocused
     }
 }
 
@@ -191,12 +196,12 @@ struct FocusBorderConfig: Codable {
     enum CodingKeys: String, CodingKey {
         case enabled
         case width
-        case cornerRadius = "corner_radius"
+        case cornerRadius
         case color
         case opacity
         case animated
-        case animationDuration = "animation_duration"
-        case menubarStrokeColor = "menubar_stroke_color"
+        case animationDuration
+        case menubarStrokeColor
     }
 
     /// Parse hex color string to NSColor
@@ -263,8 +268,8 @@ struct NotesConfig: Codable {
 
     enum CodingKeys: String, CodingKey {
         case home
-        case assetsDir = "assets_dir"
-        case capturesDir = "captures_dir"
+        case assetsDir
+        case capturesDir
     }
 
     /// Resolve home path, checking environment and common locations
