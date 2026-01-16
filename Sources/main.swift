@@ -51,7 +51,7 @@ enum PanelMode: String, CaseIterable {
 /// Configuration for shade, parsed from command-line args
 struct AppConfig {
     /// Width as percentage of screen (0.0-1.0) or absolute pixels if > 1
-    var width: Double = 0.45
+    var width: Double = 0.5
     /// Height as percentage of screen (0.0-1.0) or absolute pixels if > 1
     var height: Double = 0.5
     /// Command to run in terminal (default: nvim with socket)

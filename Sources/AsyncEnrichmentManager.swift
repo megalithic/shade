@@ -74,6 +74,19 @@ actor AsyncEnrichmentManager {
     /// Whether we've started listening for buffer events
     private var isListening = false
 
+    /// Callback for pending count changes (called on count change with new count)
+    private var countChangedHandler: (@Sendable (Int) -> Void)?
+
+    /// Set a callback for when pending enrichment count changes
+    func setCountChangedHandler(_ handler: @escaping @Sendable (Int) -> Void) {
+        self.countChangedHandler = handler
+    }
+
+    /// Notify count changed
+    private func notifyCountChanged() {
+        countChangedHandler?(pendingEnrichments.count)
+    }
+
     // MARK: - Public API
 
     /// Start an async enrichment task for a buffer
@@ -123,6 +136,7 @@ actor AsyncEnrichmentManager {
         )
 
         pendingEnrichments[bufferId] = pending
+        notifyCountChanged()
 
         // Ensure we're listening for buffer close events
         Task { await ensureListening() }
@@ -140,6 +154,7 @@ actor AsyncEnrichmentManager {
 
         Log.debug("AsyncEnrichment: Cancelled enrichment for buffer \(bufferId)")
         pending.task.cancel()
+        notifyCountChanged()
     }
 
     /// Cancel all pending enrichments
@@ -149,6 +164,7 @@ actor AsyncEnrichmentManager {
             pending.task.cancel()
         }
         pendingEnrichments.removeAll()
+        notifyCountChanged()
     }
 
     /// Check if there's an active enrichment for a buffer
@@ -228,10 +244,14 @@ actor AsyncEnrichmentManager {
         // Apply results to buffer
         await applyEnrichmentResult(bufferId: bufferId, result: result)
 
+        // Get start time before cleanup
+        let startTime = pendingEnrichments[bufferId]?.startTime ?? Date()
+
         // Clean up
         pendingEnrichments.removeValue(forKey: bufferId)
+        notifyCountChanged()
 
-        let elapsed = Date().timeIntervalSince(pendingEnrichments[bufferId]?.startTime ?? Date())
+        let elapsed = Date().timeIntervalSince(startTime)
         Log.info("AsyncEnrichment: Completed enrichment for buffer \(bufferId) in \(String(format: "%.1f", elapsed))s")
     }
 
@@ -287,12 +307,15 @@ actor AsyncEnrichmentManager {
     }
 
     /// Build Lua code for placeholder replacement
+    /// Uses a two-pass approach to handle multi-line replacements properly:
+    /// 1. Find placeholder lines and mark them for replacement
+    /// 2. Build new lines array with proper multi-line handling
     private func buildReplacementLua(
         bufferId: Int64,
         summary: String?,
         tags: [String]?
     ) -> String {
-        // Escape strings for Lua
+        // Escape strings for Lua (keeping newlines as \n for splitting later)
         let escapedSummary = summary?.replacingOccurrences(of: "\\", with: "\\\\")
             .replacingOccurrences(of: "\"", with: "\\\"")
             .replacingOccurrences(of: "\n", with: "\\n") ?? ""
@@ -306,40 +329,64 @@ actor AsyncEnrichmentManager {
             end
 
             local lines = vim.api.nvim_buf_get_lines(bufnr, 0, -1, false)
+            local new_lines = {}
             local modified = false
 
+            -- Helper to split string by newlines
+            local function split_lines(str)
+                local result = {}
+                for line in (str .. '\\n'):gmatch('([^\\n]*)\\n') do
+                    table.insert(result, line)
+                end
+                return result
+            end
+
             for i, line in ipairs(lines) do
+                local handled = false
+
                 -- Replace summary placeholder
                 if line:find('<!-- shade:pending:summary -->', 1, true) then
                     local summary = "\(escapedSummary)"
                     if summary ~= "" then
-                        lines[i] = line:gsub('<!%-%- shade:pending:summary %-%->',
-                            '> [!summary]\\n> ' .. summary)
+                        -- Format as Obsidian callout with each line prefixed with >
+                        local summary_lines = split_lines(summary)
+                        table.insert(new_lines, '> [!summary]')
+                        for _, sline in ipairs(summary_lines) do
+                            if sline ~= "" then
+                                table.insert(new_lines, '> ' .. sline)
+                            end
+                        end
                         modified = true
+                        handled = true
                     else
-                        -- Remove placeholder if no summary
-                        lines[i] = line:gsub('<!%-%- shade:pending:summary %-%->', '')
+                        -- Skip the placeholder line if no summary
                         modified = true
+                        handled = true
                     end
                 end
 
                 -- Replace tags placeholder
-                if line:find('<!-- shade:pending:tags -->', 1, true) then
+                if not handled and line:find('<!-- shade:pending:tags -->', 1, true) then
                     local tags = "\(formattedTags)"
                     if tags ~= "" then
-                        lines[i] = line:gsub('<!%-%- shade:pending:tags %-%->',
-                            '**Tags:** ' .. tags)
+                        table.insert(new_lines, '**Tags:** ' .. tags)
                         modified = true
+                        handled = true
                     else
-                        -- Remove placeholder if no tags
-                        lines[i] = line:gsub('<!%-%- shade:pending:tags %-%->', '')
+                        -- Skip the placeholder line if no tags
                         modified = true
+                        handled = true
                     end
+                end
+
+                -- Keep original line if not a placeholder
+                if not handled then
+                    table.insert(new_lines, line)
                 end
             end
 
             if modified then
-                vim.api.nvim_buf_set_lines(bufnr, 0, -1, false, lines)
+                vim.api.nvim_buf_set_lines(bufnr, 0, -1, false, new_lines)
             end
 
             return modified

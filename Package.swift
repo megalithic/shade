@@ -125,7 +125,7 @@ let package = Package(
                 .product(name: "MLXLMCommon", package: "mlx-swift-lm"),
             ],
             path: "Sources",
-            exclude: ["MsgpackRpc", "ContextGatherer", "ShadeCore"],
+            exclude: ["MsgpackRpc", "ContextGatherer", "ShadeCore", "Resources"],
             swiftSettings: [
                 // Import path for GhosttyKit module
                 .unsafeFlags([
@@ -137,6 +137,11 @@ let package = Package(
                 .unsafeFlags([
                     // Link the static library
                     ghostty.library,
+                    // Embed Info.plist into binary for bundle identifier
+                    "-Xlinker", "-sectcreate",
+                    "-Xlinker", "__TEXT",
+                    "-Xlinker", "__info_plist",
+                    "-Xlinker", "Sources/Resources/Info.plist",
                 ]),
                 // System frameworks required by libghostty
                 .linkedFramework("Metal"),

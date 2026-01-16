@@ -17,17 +17,18 @@ default: build
 # Development
 # ─────────────────────────────────────────────────────────────
 
-# Build debug binary
+# Build debug binary (includes MLX metallib compilation)
 build:
     swift build
+    @just install-metal-debug 2>/dev/null || echo "Note: MLX metallib not compiled (run 'just install-metal-debug' manually if MLX fails)"
 
 # Build and run (debug)
 run *ARGS: build
     .build/debug/{{name}} {{ARGS}}
 
-# Run with common development flags
+# Run with common development flags (uses code defaults for dimensions)
 dev: build
-    .build/debug/{{name}} --width 0.4 --height 0.4 --verbose
+    .build/debug/{{name}} --verbose
 
 # Run hidden (for Hammerspoon integration testing)
 run-hidden: build
@@ -49,6 +50,76 @@ release:
 universal:
     swift build -c release --arch arm64 --arch x86_64
 
+# Create .app bundle (gives proper bundle ID for macOS/Hammerspoon)
+bundle config="debug":
+    #!/usr/bin/env bash
+    set -euo pipefail
+
+    BUILD_DIR=".build/{{config}}"
+    APP_NAME="Shade.app"
+    APP_PATH="${BUILD_DIR}/${APP_NAME}"
+    BUNDLE_ID="io.shade"
+
+    echo "Creating ${APP_NAME} bundle..."
+
+    # Clean existing bundle
+    rm -rf "${APP_PATH}"
+
+    # Create bundle structure
+    mkdir -p "${APP_PATH}/Contents/MacOS"
+    mkdir -p "${APP_PATH}/Contents/Resources"
+
+    # Copy binary
+    cp "${BUILD_DIR}/{{name}}" "${APP_PATH}/Contents/MacOS/{{name}}"
+
+    # Copy metallib if present
+    if [ -f "${BUILD_DIR}/mlx.metallib" ]; then
+        cp "${BUILD_DIR}/mlx.metallib" "${APP_PATH}/Contents/Resources/mlx.metallib"
+    fi
+
+    # Create Info.plist
+    cat > "${APP_PATH}/Contents/Info.plist" << EOF
+    <?xml version="1.0" encoding="UTF-8"?>
+    <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+    <plist version="1.0">
+    <dict>
+        <key>CFBundleIdentifier</key>
+        <string>${BUNDLE_ID}</string>
+        <key>CFBundleName</key>
+        <string>shade</string>
+        <key>CFBundleDisplayName</key>
+        <string>Shade</string>
+        <key>CFBundleExecutable</key>
+        <string>{{name}}</string>
+        <key>CFBundleVersion</key>
+        <string>{{version}}</string>
+        <key>CFBundleShortVersionString</key>
+        <string>{{version}}</string>
+        <key>CFBundlePackageType</key>
+        <string>APPL</string>
+        <key>CFBundleInfoDictionaryVersion</key>
+        <string>6.0</string>
+        <key>LSMinimumSystemVersion</key>
+        <string>14.0</string>
+        <key>NSHighResolutionCapable</key>
+        <true/>
+        <key>LSUIElement</key>
+        <true/>
+        <key>NSHumanReadableCopyright</key>
+        <string>Copyright 2024-2025 Seth Messer. All rights reserved.</string>
+    </dict>
+    </plist>
+    EOF
+
+    # Create PkgInfo
+    echo -n "APPL????" > "${APP_PATH}/Contents/PkgInfo"
+
+    echo "✓ Created ${APP_PATH}"
+    echo "  Bundle ID: ${BUNDLE_ID}"
+
+    # Register with Launch Services
+    /System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister -f "${APP_PATH}" 2>/dev/null || true
+
 # Show release binary info
 release-info: release
     @echo "Binary: .build/release/{{name}}"
@@ -59,11 +130,14 @@ release-info: release
     @otool -L .build/release/{{name}} | head -20
 
 # Install release binary to ~/.local/bin (or $PREFIX/bin)
+# Also installs MLX metallib alongside the binary
 install:
     @rm -f .build/.lock
     @just release
+    @just install-metal-release 2>/dev/null || echo "Note: MLX metallib not compiled"
     @mkdir -p {{install_dir}}
     cp .build/release/{{name}} {{install_dir}}/{{name}}
+    @if [ -f .build/release/mlx.metallib ]; then cp .build/release/mlx.metallib {{install_dir}}/mlx.metallib; fi
     @echo "Installed to {{install_dir}}/{{name}}"
 
 # Uninstall from ~/.local/bin
@@ -284,6 +358,61 @@ kill:
 xcode:
     swift package generate-xcodeproj
     open {{name}}.xcodeproj
+
+# ─────────────────────────────────────────────────────────────
+# MLX Metal Shaders
+# ─────────────────────────────────────────────────────────────
+# SwiftPM can't compile Metal shaders; we need to do it manually.
+# This compiles .metal files into a metallib that MLX can load at runtime.
+
+# Compile MLX Metal shaders (required for MLX to work at runtime)
+compile-metal:
+    #!/usr/bin/env bash
+    set -euo pipefail
+
+    METAL_SRC=".build/checkouts/mlx-swift/Source/Cmlx/mlx-generated/metal"
+
+    if [[ ! -d "$METAL_SRC" ]]; then
+        echo "Metal shaders not found. Run 'swift build' first to fetch dependencies."
+        exit 1
+    fi
+
+    echo "Compiling MLX Metal shaders..."
+    cd "$METAL_SRC"
+
+    # Clean previous builds
+    rm -f /tmp/mlx_*.air /tmp/mlx.metallib 2>/dev/null || true
+
+    # Compile all .metal files (including subdirectories)
+    find . -name "*.metal" -print0 | while IFS= read -r -d '' f; do
+        safename=$(echo "$f" | sed 's|^\./||; s|/|_|g; s|\.metal$||')
+        echo "  Compiling: $f"
+        xcrun -sdk macosx metal -c "$f" -I. -o "/tmp/mlx_${safename}.air" 2>/dev/null || {
+            echo "  Warning: Failed to compile $f"
+        }
+    done
+
+    # Link into metallib
+    if ls /tmp/mlx_*.air 1>/dev/null 2>&1; then
+        echo "Linking metallib..."
+        xcrun -sdk macosx metallib /tmp/mlx_*.air -o /tmp/mlx.metallib
+        echo "✓ Created /tmp/mlx.metallib"
+    else
+        echo "✗ No AIR files to link"
+        exit 1
+    fi
+
+# Copy metallib to debug build directory
+install-metal-debug: compile-metal
+    @mkdir -p .build/debug
+    cp /tmp/mlx.metallib .build/debug/mlx.metallib
+    @echo "✓ Installed metallib to .build/debug/"
+
+# Copy metallib to release build directory
+install-metal-release: compile-metal
+    @mkdir -p .build/release
+    cp /tmp/mlx.metallib .build/release/mlx.metallib
+    @echo "✓ Installed metallib to .build/release/"
 
 # ─────────────────────────────────────────────────────────────
 # Nix

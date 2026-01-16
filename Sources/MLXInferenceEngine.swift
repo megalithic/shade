@@ -120,6 +120,9 @@ actor MLXInferenceEngine {
     /// Progress callback for model downloads (must be Sendable for actor isolation)
     private var downloadProgress: (@Sendable (Double) -> Void)?
 
+    /// Callback for model load state changes (loading started, completed, failed)
+    private var loadStateChanged: (@Sendable (Bool, String?) -> Void)?
+
     // MARK: - Initialization
 
     /// Initialize with configuration from ShadeConfig
@@ -157,11 +160,15 @@ actor MLXInferenceEngine {
         let modelId = config.model
         Log.info("Loading MLX model: \(modelId)")
 
+        // Capture handlers before async work (for actor isolation)
+        let progressHandler = self.downloadProgress
+        let stateHandler = self.loadStateChanged
+
+        // Notify loading started
+        stateHandler?(false, nil)
+
         do {
             let startTime = Date()
-
-            // Capture progress handler before async work (for actor isolation)
-            let progressHandler = self.downloadProgress
 
             // Load model with progress handler
             let container = try await loadModelContainer(id: modelId) { progress in
@@ -185,8 +192,13 @@ actor MLXInferenceEngine {
                 generateParameters: generateParams
             )
 
+            // Notify loading completed successfully
+            stateHandler?(true, nil)
+
         } catch {
             Log.error("Failed to load model: \(error.localizedDescription)")
+            // Notify loading failed
+            stateHandler?(true, error.localizedDescription)
             throw MLXInferenceError.modelLoadFailed(error.localizedDescription)
         }
     }
@@ -194,6 +206,12 @@ actor MLXInferenceEngine {
     /// Set a callback for download progress (0.0-1.0)
     func setDownloadProgressHandler(_ handler: @escaping @Sendable (Double) -> Void) {
         self.downloadProgress = handler
+    }
+
+    /// Set a callback for model load state changes
+    /// - Parameter handler: Called with (isLoaded: Bool, error: String?) - true+nil = success, false+nil = started, true+error = failed
+    func setLoadStateHandler(_ handler: @escaping @Sendable (Bool, String?) -> Void) {
+        self.loadStateChanged = handler
     }
 
     // MARK: - Summarization

@@ -527,20 +527,29 @@ actor ShadeNvim {
         }
 
         // Use Lua to find frontmatter end and insert placeholders
+        // Only inserts if placeholders don't already exist (template may have them)
         let luaCode = """
             local lines = vim.api.nvim_buf_get_lines(0, 0, -1, false)
             local frontmatter_end = nil
             local in_frontmatter = false
+            local has_summary_placeholder = false
+            local has_tags_placeholder = false
 
-            -- Find end of frontmatter
+            -- Find end of frontmatter and check for existing placeholders
             for i, line in ipairs(lines) do
                 if line == '---' then
                     if not in_frontmatter then
                         in_frontmatter = true
                     else
                         frontmatter_end = i
-                        break
                     end
+                end
+                -- Check for existing placeholders (template may already have them)
+                if line:find('<!-- shade:pending:summary -->', 1, true) then
+                    has_summary_placeholder = true
+                end
+                if line:find('<!-- shade:pending:tags -->', 1, true) then
+                    has_tags_placeholder = true
                 end
             end
 
@@ -548,16 +557,25 @@ actor ShadeNvim {
                 return false
             end
 
-            -- Insert placeholders after frontmatter
-            local placeholders = {
-                "",
-                "<!-- shade:pending:summary -->",
-                "",
-                "<!-- shade:pending:tags -->",
-                ""
-            }
+            -- If placeholders already exist in template, don't insert duplicates
+            if has_summary_placeholder and has_tags_placeholder then
+                return true  -- Placeholders exist, nothing to insert
+            end
 
-            vim.api.nvim_buf_set_lines(0, frontmatter_end, frontmatter_end, false, placeholders)
+            -- Insert placeholders after frontmatter only if they don't exist
+            local placeholders = {}
+            if not has_summary_placeholder then
+                table.insert(placeholders, "")
+                table.insert(placeholders, "<!-- shade:pending:summary -->")
+            end
+            if not has_tags_placeholder then
+                table.insert(placeholders, "")
+                table.insert(placeholders, "<!-- shade:pending:tags -->")
+            end
+            if #placeholders > 0 then
+                table.insert(placeholders, "")
+                vim.api.nvim_buf_set_lines(0, frontmatter_end, frontmatter_end, false, placeholders)
+            end
             return true
             """
 

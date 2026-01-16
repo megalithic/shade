@@ -397,17 +397,135 @@ final class MsgpackRpcTests: XCTestCase {
             method: "nvim_buf_lines_event",
             params: [.int(1), .int(100), .int(0), .int(1), .array([.string("new line")]), .bool(false)]
         )
-        
+
         let data = original.encode()
         let (value, _) = try unpack(data)
         let message = try MsgpackRpc.decode(value)
-        
+
         guard case .notification(let decoded) = message else {
             XCTFail("Should decode as notification")
             return
         }
-        
+
         XCTAssertEqual(decoded.method, original.method)
         XCTAssertEqual(decoded.params.count, original.params.count)
+    }
+
+    // MARK: - Neovim Extended Type Tests
+    //
+    // Neovim uses msgpack Extended types for buffer/window/tabpage handles:
+    // - ext type 0 = Buffer
+    // - ext type 1 = Window
+    // - ext type 2 = Tabpage
+    //
+    // The data payload is a msgpack-encoded integer (the handle ID).
+    // These tests document the format for the extractHandleId helper in NvimAPI.
+
+    func testExtendedTypeBufferHandle() throws {
+        // Neovim buffer handle as ext type 0 with value 1
+        // Format: ext type 0, data = msgpack uint8 (0x01)
+        let extData = Data([0x01])  // Simple uint8 = 1
+        let value = MessagePackValue.extended(0, extData)
+
+        // Verify we can extract the extended type info
+        guard let (extType, data) = value.extendedValue else {
+            XCTFail("Should be extended type")
+            return
+        }
+
+        XCTAssertEqual(extType, 0, "Buffer handles use ext type 0")
+        XCTAssertEqual(data.count, 1)
+        XCTAssertEqual(Int64(data[0]), 1, "Handle ID should be 1")
+    }
+
+    func testExtendedTypeWindowHandle() throws {
+        // Neovim window handle as ext type 1 with value 1000
+        // Format: ext type 1, data = msgpack uint16 (0xcd 0x03 0xe8)
+        let extData = Data([0xcd, 0x03, 0xe8])  // msgpack uint16 = 1000
+        let value = MessagePackValue.extended(1, extData)
+
+        guard let (extType, data) = value.extendedValue else {
+            XCTFail("Should be extended type")
+            return
+        }
+
+        XCTAssertEqual(extType, 1, "Window handles use ext type 1")
+
+        // Parse uint16 format: 0xcd prefix, then 2 bytes big-endian
+        if data.count == 3 && data[0] == 0xcd {
+            let handleId = Int64(UInt16(data[1]) << 8 | UInt16(data[2]))
+            XCTAssertEqual(handleId, 1000)
+        } else {
+            XCTFail("Expected uint16 msgpack format")
+        }
+    }
+
+    func testExtendedTypeTabpageHandle() throws {
+        // Neovim tabpage handle as ext type 2
+        let extData = Data([0x02])  // Simple uint8 = 2
+        let value = MessagePackValue.extended(2, extData)
+
+        guard let (extType, data) = value.extendedValue else {
+            XCTFail("Should be extended type")
+            return
+        }
+
+        XCTAssertEqual(extType, 2, "Tabpage handles use ext type 2")
+        XCTAssertEqual(Int64(data[0]), 2)
+    }
+
+    func testExtendedTypeWithPackedInteger() throws {
+        // Sometimes nvim sends the ID as a fully msgpack-encoded integer
+        // This tests unpacking the data payload as msgpack
+        let handleId: Int64 = 42
+        let innerData = pack(.int(handleId))
+        let value = MessagePackValue.extended(0, innerData)
+
+        guard let (extType, data) = value.extendedValue else {
+            XCTFail("Should be extended type")
+            return
+        }
+
+        XCTAssertEqual(extType, 0)
+
+        // Unpack the inner data as msgpack
+        let (innerValue, _) = try unpack(data)
+        XCTAssertEqual(innerValue.int64Value, handleId)
+    }
+
+    func testExtendedTypeVsDirectInteger() throws {
+        // Document the difference between direct int and extended type
+        // Old nvim versions returned direct integers, new ones use extended types
+
+        // Direct integer (old behavior)
+        let directInt = MessagePackValue.int(5)
+        XCTAssertEqual(directInt.int64Value, 5)
+        XCTAssertNil(directInt.extendedValue)
+
+        // Extended type (new behavior)
+        let extendedInt = MessagePackValue.extended(0, Data([0x05]))
+        XCTAssertNil(extendedInt.int64Value, "Extended type doesn't have int64Value")
+        XCTAssertNotNil(extendedInt.extendedValue)
+
+        // Helper function to extract ID from either format
+        // (This is what extractHandleId in NvimAPI does)
+        func extractId(_ value: MessagePackValue) -> Int64? {
+            if let id = value.int64Value {
+                return id
+            }
+            if let (extType, data) = value.extendedValue, extType >= 0 && extType <= 2 {
+                if data.count == 1 {
+                    return Int64(data[0])
+                }
+                // Try unpacking as msgpack
+                if let (decoded, _) = try? unpack(data) {
+                    return decoded.int64Value
+                }
+            }
+            return nil
+        }
+
+        XCTAssertEqual(extractId(directInt), 5)
+        XCTAssertEqual(extractId(extendedInt), 5)
     }
 }

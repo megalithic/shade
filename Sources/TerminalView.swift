@@ -137,6 +137,10 @@ class TerminalView: NSView {
     }
 
     override func setFrameSize(_ newSize: NSSize) {
+        let oldSize = frame.size
+        if oldSize != newSize {
+            Log.debug("TerminalView: setFrameSize from \(oldSize.width)x\(oldSize.height) to \(newSize.width)x\(newSize.height)")
+        }
         super.setFrameSize(newSize)
         updateSurfaceSize()
     }

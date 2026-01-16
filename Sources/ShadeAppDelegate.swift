@@ -72,6 +72,7 @@ class ShadeAppDelegate: NSObject, NSApplicationDelegate {
     func applicationDidFinishLaunching(_ notification: Notification) {
         ShadeAppDelegate.shared = self
         Log.debug("Starting...")
+        Log.debug("Bundle ID: \(Bundle.main.bundleIdentifier ?? "nil")")
 
         // Make this a background app (no dock icon, no menu bar when hidden)
         NSApp.setActivationPolicy(.accessory)
@@ -193,6 +194,44 @@ class ShadeAppDelegate: NSObject, NSApplicationDelegate {
 
             manager.setup()
 
+            // Wire up MLX callbacks to menu bar
+            // Note: MLXInferenceEngine is an actor, so we use @Sendable closures
+            Task {
+                // Download progress
+                await MLXInferenceEngine.shared.setDownloadProgressHandler { @Sendable progress in
+                    Task { @MainActor in
+                        manager.setModelState(.downloading(progress: progress))
+                    }
+                }
+
+                // Load state changes (started, completed, failed)
+                await MLXInferenceEngine.shared.setLoadStateHandler { @Sendable isCompleted, error in
+                    Task { @MainActor in
+                        if let error = error {
+                            manager.setModelState(.error(error))
+                        } else if isCompleted {
+                            manager.setModelState(.ready)
+                        } else {
+                            manager.setModelState(.loading)
+                        }
+                    }
+                }
+
+                // Enrichment count changes
+                await AsyncEnrichmentManager.shared.setCountChangedHandler { @Sendable count in
+                    Task { @MainActor in
+                        manager.setEnrichmentCount(count)
+                    }
+                }
+            }
+
+            // Set initial model state based on config
+            if let llmConfig = ShadeConfig.shared.llm, llmConfig.enabled {
+                manager.setModelState(.idle)
+            } else {
+                manager.setModelState(.disabled)
+            }
+
             // Log initial experimental settings
             Log.debug("Experimental settings: autoTrack=\(manager.autoTrackCompanion), autoResize=\(manager.autoResizeCompanion)")
         }
@@ -287,21 +326,30 @@ class ShadeAppDelegate: NSObject, NSApplicationDelegate {
             }
 
             // Track it if it's not Shade
-            let isShade = app.bundleIdentifier == Bundle.main.bundleIdentifier
+            // Check both bundle ID (for .app bundles) and process name (for bare executables in dev)
+            let isShade = app.bundleIdentifier == Bundle.main.bundleIdentifier ||
+                          app.localizedName == "shade" ||
+                          app.processIdentifier == ProcessInfo.processInfo.processIdentifier
             if !isShade {
                 self.lastNonShadeFrontApp = app
                 Log.debug("Tracked frontmost app: \(app.localizedName ?? "unknown") (\(app.bundleIdentifier ?? "?"))")
 
                 // Experimental: Dynamic companion tracking in sidebar mode
                 self.handlePotentialCompanionChange(app)
+            } else {
+                Log.debug("Skipping Shade from tracking (bundle: \(app.bundleIdentifier ?? "?"), our bundle: \(Bundle.main.bundleIdentifier ?? "?"))")
             }
         }
 
         // Initialize with current frontmost app (if not Shade)
-        if let frontApp = workspace.frontmostApplication,
-           frontApp.bundleIdentifier != Bundle.main.bundleIdentifier {
-            lastNonShadeFrontApp = frontApp
-            Log.debug("Initial frontmost app: \(frontApp.localizedName ?? "unknown")")
+        if let frontApp = workspace.frontmostApplication {
+            let isShade = frontApp.bundleIdentifier == Bundle.main.bundleIdentifier ||
+                          frontApp.localizedName == "shade" ||
+                          frontApp.processIdentifier == ProcessInfo.processInfo.processIdentifier
+            if !isShade {
+                lastNonShadeFrontApp = frontApp
+                Log.debug("Initial frontmost app: \(frontApp.localizedName ?? "unknown")")
+            }
         }
 
         Log.debug("Workspace observer configured")
@@ -1099,12 +1147,36 @@ class ShadeAppDelegate: NSObject, NSApplicationDelegate {
 
         panel?.hide()
 
-        // Restore focus to the previously focused app
-        if let prevApp = previousFocusedApp {
-            Log.debug("Restoring focus to: \(prevApp.localizedName ?? "unknown")")
-            prevApp.activate()
-            previousFocusedApp = nil
+        // Restore focus to the most recent non-Shade app
+        // Use lastNonShadeFrontApp (proactively tracked) as it's always up-to-date
+        // Fallback to previousFocusedApp if tracking hasn't captured anything yet
+        Log.debug("hidePanel: lastNonShadeFrontApp=\(lastNonShadeFrontApp?.localizedName ?? "nil"), previousFocusedApp=\(previousFocusedApp?.localizedName ?? "nil")")
+        let appToRestore = lastNonShadeFrontApp ?? previousFocusedApp
+        if let app = appToRestore {
+            Log.debug("Restoring focus to: \(app.localizedName ?? "unknown") (bundle: \(app.bundleIdentifier ?? "?"))")
+
+            // Activate the app first
+            app.activate()
+
+            // Use Accessibility API to raise and focus the app's main window
+            // This ensures keyboard focus is properly restored (activate() alone may not be enough)
+            let appElement = AXUIElementCreateApplication(app.processIdentifier)
+            var windowsValue: CFTypeRef?
+            let result = AXUIElementCopyAttributeValue(appElement, kAXWindowsAttribute as CFString, &windowsValue)
+
+            if result == .success, let windows = windowsValue as? [AXUIElement], let firstWindow = windows.first {
+                // Raise the main window
+                AXUIElementPerformAction(firstWindow, kAXRaiseAction as CFString)
+                // Also try to make it the focused window
+                AXUIElementSetAttributeValue(appElement, kAXFocusedWindowAttribute as CFString, firstWindow)
+                Log.debug("Raised and focused window for \(app.localizedName ?? "unknown")")
+            } else {
+                Log.debug("Could not access windows for \(app.localizedName ?? "unknown")")
+            }
+        } else {
+            Log.warn("No app to restore focus to")
         }
+        previousFocusedApp = nil
     }
 
     /// Check if panel is visible
@@ -1134,7 +1206,11 @@ class ShadeAppDelegate: NSObject, NSApplicationDelegate {
         if !isPanelVisible {
             let frontApp = NSWorkspace.shared.frontmostApplication
             // Don't save Shade itself as the previous app
-            if frontApp?.bundleIdentifier != Bundle.main.bundleIdentifier {
+            // Check both bundle ID (for .app bundles) and process name/PID (for bare executables in dev)
+            let isShade = frontApp?.bundleIdentifier == Bundle.main.bundleIdentifier ||
+                          frontApp?.localizedName == "shade" ||
+                          frontApp?.processIdentifier == ProcessInfo.processInfo.processIdentifier
+            if !isShade {
                 previousFocusedApp = frontApp
                 Log.debug("Captured previous app: \(frontApp?.localizedName ?? "none")")
             } else if let tracked = lastNonShadeFrontApp {

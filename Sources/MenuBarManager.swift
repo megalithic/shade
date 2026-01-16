@@ -22,21 +22,33 @@ final class MenuBarManager {
 
     // MARK: - Version Info
 
-    /// Git SHA of origin/main (8 chars), fetched at startup
+    /// Build context prefix (debug/release/none for installed)
+    private static let buildPrefix: String? = {
+        let bundlePath = Bundle.main.bundlePath
+        if bundlePath.contains(".build/debug") {
+            return "debug"
+        } else if bundlePath.contains(".build/release") {
+            return "release"
+        }
+        // Installed binary (via just install, flake, or release) - no prefix
+        return nil
+    }()
+
+    /// Git SHA of HEAD (8 chars), fetched at startup
     private static let gitSHA: String = {
         // Try to get the SHA from the shade repo
-        // This runs git to get origin/main's commit SHA
+        // This runs git to get HEAD's commit SHA
         let process = Process()
         process.executableURL = URL(fileURLWithPath: "/usr/bin/git")
-        process.arguments = ["rev-parse", "--short=8", "origin/main"]
-        
+        process.arguments = ["rev-parse", "--short=8", "HEAD"]
+
         // Find the shade repo - check common locations
         let possiblePaths = [
             NSHomeDirectory() + "/code/shade",
             NSHomeDirectory() + "/.local/share/shade",
             Bundle.main.bundlePath  // In case running from built app
         ]
-        
+
         for path in possiblePaths {
             let gitDir = path + "/.git"
             if FileManager.default.fileExists(atPath: gitDir) {
@@ -44,15 +56,15 @@ final class MenuBarManager {
                 break
             }
         }
-        
+
         let pipe = Pipe()
         process.standardOutput = pipe
         process.standardError = FileHandle.nullDevice
-        
+
         do {
             try process.run()
             process.waitUntilExit()
-            
+
             if process.terminationStatus == 0 {
                 let data = pipe.fileHandleForReading.readDataToEndOfFile()
                 if let sha = String(data: data, encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines),
@@ -63,8 +75,17 @@ final class MenuBarManager {
         } catch {
             // Silently fail - version just won't show
         }
-        
+
         return "unknown"
+    }()
+
+    /// Formatted version string for display
+    private static let versionString: String = {
+        if let prefix = buildPrefix {
+            return "\(prefix)-\(gitSHA)"
+        } else {
+            return gitSHA
+        }
     }()
 
     /// Get the focused stroke color from config, or use default
@@ -75,6 +96,35 @@ final class MenuBarManager {
         return Colors.focusedDefault
     }
     
+    // MARK: - Background Activity State
+
+    /// State of the LLM model
+    enum ModelState: Equatable {
+        case disabled
+        case idle
+        case loading
+        case downloading(progress: Double)
+        case ready
+        case error(String)
+
+        var displayString: String {
+            switch self {
+            case .disabled:
+                return "LLM: Disabled"
+            case .idle:
+                return "LLM: Not loaded"
+            case .loading:
+                return "LLM: Loading..."
+            case .downloading(let progress):
+                return "LLM: Downloading (\(Int(progress * 100))%)"
+            case .ready:
+                return "LLM: Ready"
+            case .error(let msg):
+                return "LLM: Error - \(msg)"
+            }
+        }
+    }
+
     // MARK: - UserDefaults Keys
 
     private enum DefaultsKeys {
@@ -96,6 +146,24 @@ final class MenuBarManager {
     /// Menu items for toggles (for updating checkmarks)
     private var autoTrackMenuItem: NSMenuItem?
     private var autoResizeMenuItem: NSMenuItem?
+
+    /// Menu items for background activity status (for dynamic updates)
+    private var modelStatusMenuItem: NSMenuItem?
+    private var enrichmentStatusMenuItem: NSMenuItem?
+
+    /// Current model state
+    private(set) var modelState: ModelState = .idle {
+        didSet {
+            updateModelStatusMenuItem()
+        }
+    }
+
+    /// Current pending enrichment count
+    private(set) var pendingEnrichments: Int = 0 {
+        didSet {
+            updateEnrichmentStatusMenuItem()
+        }
+    }
 
     /// Callback for toggle action
     var onToggle: (() -> Void)?
@@ -207,6 +275,33 @@ final class MenuBarManager {
 
         menu.addItem(NSMenuItem.separator())
 
+        // Background Activity section
+        let activityHeader = NSMenuItem(title: "Background Activity", action: nil, keyEquivalent: "")
+        activityHeader.isEnabled = false
+        menu.addItem(activityHeader)
+
+        // Model status (dynamically updated)
+        let modelItem = NSMenuItem(title: modelState.displayString, action: nil, keyEquivalent: "")
+        modelItem.isEnabled = false
+        menu.addItem(modelItem)
+        self.modelStatusMenuItem = modelItem
+
+        // Enrichment status (dynamically updated, hidden when 0)
+        let enrichmentItem = NSMenuItem(title: "Enrichments: 0 pending", action: nil, keyEquivalent: "")
+        enrichmentItem.isEnabled = false
+        enrichmentItem.isHidden = true  // Hidden until there are pending enrichments
+        menu.addItem(enrichmentItem)
+        self.enrichmentStatusMenuItem = enrichmentItem
+
+        menu.addItem(NSMenuItem.separator())
+
+        // Show Logs action
+        let logsItem = NSMenuItem(title: "Show Logs...", action: #selector(handleShowLogs), keyEquivalent: "l")
+        logsItem.target = self
+        menu.addItem(logsItem)
+
+        menu.addItem(NSMenuItem.separator())
+
         // Experimental settings section
         let settingsHeader = NSMenuItem(title: "Sidebar Experiments", action: nil, keyEquivalent: "")
         settingsHeader.isEnabled = false
@@ -238,8 +333,8 @@ final class MenuBarManager {
 
         menu.addItem(NSMenuItem.separator())
 
-        // Version info (git SHA from origin/main)
-        let versionItem = NSMenuItem(title: "Version: \(Self.gitSHA)", action: nil, keyEquivalent: "")
+        // Version info (build context + git SHA from HEAD)
+        let versionItem = NSMenuItem(title: Self.versionString, action: nil, keyEquivalent: "")
         versionItem.isEnabled = false
         menu.addItem(versionItem)
 
@@ -399,5 +494,58 @@ final class MenuBarManager {
     @objc private func handleAutoResizeToggle() {
         autoResizeCompanion.toggle()
         Log.debug("MenuBarManager: Auto-resize companion = \(autoResizeCompanion)")
+    }
+
+    @objc private func handleShowLogs() {
+        // Open Console.app with a predicate to filter for Shade's subsystem
+        // The predicate filters for process name "shade" or subsystem "io.shade"
+        let script = """
+            tell application "Console"
+                activate
+            end tell
+            """
+
+        // First, open Console
+        if let appleScript = NSAppleScript(source: script) {
+            var error: NSDictionary?
+            appleScript.executeAndReturnError(&error)
+            if let error = error {
+                Log.warn("MenuBarManager: Failed to open Console: \(error)")
+            }
+        }
+
+        // The user can then use the search field to filter by "shade"
+        // Unfortunately, Console.app doesn't have good AppleScript support for setting predicates
+        Log.debug("MenuBarManager: Opened Console.app - filter by 'shade' in search")
+    }
+
+    // MARK: - Background Activity Updates
+
+    /// Update model status from external source
+    func setModelState(_ state: ModelState) {
+        modelState = state
+    }
+
+    /// Update pending enrichment count from external source
+    func setEnrichmentCount(_ count: Int) {
+        pendingEnrichments = count
+    }
+
+    /// Update model status menu item
+    private func updateModelStatusMenuItem() {
+        modelStatusMenuItem?.title = modelState.displayString
+        Log.debug("MenuBarManager: Model status = \(modelState.displayString)")
+    }
+
+    /// Update enrichment status menu item
+    private func updateEnrichmentStatusMenuItem() {
+        if pendingEnrichments > 0 {
+            let plural = pendingEnrichments == 1 ? "" : "s"
+            enrichmentStatusMenuItem?.title = "Enrichment\(plural): \(pendingEnrichments) pending"
+            enrichmentStatusMenuItem?.isHidden = false
+        } else {
+            enrichmentStatusMenuItem?.isHidden = true
+        }
+        Log.debug("MenuBarManager: Pending enrichments = \(pendingEnrichments)")
     }
 }

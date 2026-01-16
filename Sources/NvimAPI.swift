@@ -185,8 +185,8 @@ actor NvimAPI {
             timeout: timeout
         )
         try checkError(response)
-        
-        guard let id = response.result.int64Value else {
+
+        guard let id = extractHandleId(response.result) else {
             throw APIError.unexpectedResultType(expected: "Buffer", got: describe(response.result))
         }
         return Buffer(id)
@@ -429,11 +429,11 @@ actor NvimAPI {
             throw APIError.unexpectedResultType(expected: "Array", got: describe(response.result))
         }
         
-        return array.compactMap { $0.int64Value }.map { Buffer($0) }
+        return array.compactMap { extractHandleId($0) }.map { Buffer($0) }
     }
-    
+
     // MARK: - Window API
-    
+
     /// Get the current window
     /// - Returns: Current window handle
     func getCurrentWindow() async throws -> Window {
@@ -443,8 +443,8 @@ actor NvimAPI {
             timeout: timeout
         )
         try checkError(response)
-        
-        guard let id = response.result.int64Value else {
+
+        guard let id = extractHandleId(response.result) else {
             throw APIError.unexpectedResultType(expected: "Window", got: describe(response.result))
         }
         return Window(id)
@@ -472,12 +472,12 @@ actor NvimAPI {
         )
         try checkError(response)
         
-        guard let id = response.result.int64Value else {
+        guard let id = extractHandleId(response.result) else {
             throw APIError.unexpectedResultType(expected: "Buffer", got: describe(response.result))
         }
         return Buffer(id)
     }
-    
+
     /// Get window cursor position
     /// - Parameter window: Window handle
     /// - Returns: (row, col) tuple (1-indexed row, 0-indexed col)
@@ -529,9 +529,9 @@ actor NvimAPI {
             throw APIError.unexpectedResultType(expected: "Array", got: describe(response.result))
         }
         
-        return array.compactMap { $0.int64Value }.map { Window($0) }
+        return array.compactMap { extractHandleId($0) }.map { Window($0) }
     }
-    
+
     // MARK: - Mode & State
     
     /// Get current mode
@@ -719,5 +719,62 @@ actor NvimAPI {
         case .map: return "Map"
         case .extended: return "Extended"
         }
+    }
+
+    /// Extract a buffer/window/tabpage ID from a MessagePackValue
+    ///
+    /// Nvim returns handles as either:
+    /// - Direct Int64 values (older protocol)
+    /// - Extended type with type 0 (buffer), 1 (window), 2 (tabpage)
+    ///
+    /// - Parameter value: The msgpack value to extract ID from
+    /// - Returns: The handle ID, or nil if extraction failed
+    private func extractHandleId(_ value: MessagePackValue) -> Int64? {
+        // Try direct integer first
+        if let id = value.int64Value {
+            return id
+        }
+
+        // Try extended type (nvim uses ext types for handles)
+        if let (extType, data) = value.extendedValue {
+            // Types: 0 = buffer, 1 = window, 2 = tabpage
+            // Data contains the ID as msgpack-encoded integer
+            guard extType >= 0 && extType <= 2 else {
+                return nil
+            }
+
+            // The data is the raw bytes of a msgpack integer
+            // For small IDs, it's just a single byte or varint
+            if data.count == 1 {
+                // Single byte positive fixint (0-127)
+                return Int64(data[0])
+            } else if data.count == 2 && data[0] == 0xcc {
+                // uint8 format: 0xcc followed by byte
+                return Int64(data[1])
+            } else if data.count == 3 && data[0] == 0xcd {
+                // uint16 format: 0xcd followed by 2 bytes (big endian)
+                return Int64(UInt16(data[1]) << 8 | UInt16(data[2]))
+            } else if data.count == 5 && data[0] == 0xce {
+                // uint32 format: 0xce followed by 4 bytes (big endian)
+                let value = UInt32(data[1]) << 24 | UInt32(data[2]) << 16 |
+                           UInt32(data[3]) << 8 | UInt32(data[4])
+                return Int64(value)
+            } else if data.count == 9 && data[0] == 0xcf {
+                // uint64 format: 0xcf followed by 8 bytes (big endian)
+                var value: UInt64 = 0
+                for i in 1..<9 {
+                    value = value << 8 | UInt64(data[i])
+                }
+                return Int64(bitPattern: value)
+            }
+
+            // Fallback: try decoding the data as msgpack
+            // This handles any other valid msgpack integer encoding
+            if let (decoded, _) = try? MessagePack.unpack(data) {
+                return decoded.int64Value
+            }
+        }
+
+        return nil
     }
 }
