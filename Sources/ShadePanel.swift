@@ -152,11 +152,20 @@ class ShadePanel: NSPanel {
         Log.debug("Positioned panel centered at (\(Int(x)), \(Int(y)))")
     }
 
-    /// Position panel at screen edge for sidebar mode
+    /// Position panel at left screen edge for sidebar mode
+    /// Shade always docks to the left side of the screen.
     /// - Parameters:
-    ///   - mode: The sidebar mode (.sidebarLeft or .sidebarRight)
+    ///   - mode: The sidebar mode (must be .sidebarLeft, kept for API compatibility)
     ///   - width: Width as percentage (0.0-1.0) or pixels (> 1.0)
     func positionSidebar(mode: PanelMode, width: Double) {
+        guard mode == .sidebarLeft else {
+            // Only left sidebar is supported; for floating, use positionCentered()
+            if mode == .floating {
+                positionCentered()
+            }
+            return
+        }
+
         guard let screen = targetScreen else {
             Log.warn("No screen found for sidebar positioning")
             return
@@ -172,29 +181,16 @@ class ShadePanel: NSPanel {
             sidebarWidth = CGFloat(width)
         }
 
-        // Full screen height
-        let sidebarHeight = screenFrame.height
-
-        // Position based on mode
-        let x: CGFloat
-        switch mode {
-        case .sidebarLeft:
-            x = screenFrame.origin.x
-        case .sidebarRight:
-            x = screenFrame.origin.x + screenFrame.width - sidebarWidth
-        case .floating:
-            // Shouldn't call this for floating mode, but handle gracefully
-            positionCentered()
-            return
-        }
-
+        // Full screen height, positioned at left edge
+        let x = screenFrame.origin.x
         let y = screenFrame.origin.y
+        let sidebarHeight = screenFrame.height
 
         // Set frame (position + size in one call)
         let newFrame = NSRect(x: x, y: y, width: sidebarWidth, height: sidebarHeight)
         setFrame(newFrame, display: true)
 
-        Log.debug("Positioned panel as \(mode.rawValue) at (\(Int(x)), \(Int(y))) size \(Int(sidebarWidth))x\(Int(sidebarHeight))")
+        Log.debug("Positioned panel as sidebar-left at (\(Int(x)), \(Int(y))) size \(Int(sidebarWidth))x\(Int(sidebarHeight))")
     }
 
     // MARK: - Key Window Behavior

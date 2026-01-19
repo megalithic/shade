@@ -37,7 +37,7 @@ class ShadeAppDelegate: NSObject, NSApplicationDelegate {
     /// Flag to track if we're in backgrounded state (surface destroyed, awaiting new command)
     private var isBackgrounded = false
 
-    /// Current panel display mode (floating, sidebar-left, sidebar-right)
+    /// Current panel display mode (floating or sidebar-left)
     private var currentMode: PanelMode = .floating
 
     /// Bundle ID of companion app when in sidebar mode (for restoration)
@@ -45,6 +45,10 @@ class ShadeAppDelegate: NSObject, NSApplicationDelegate {
 
     /// Original frame of companion window (for restoration when exiting sidebar)
     private var companionOriginalFrame: CGRect?
+
+    /// Last companion bundle ID (persists across hide/show for restoration)
+    /// Used to re-enter sidebar mode with the same companion app
+    private var lastCompanionBundleID: String?
 
     /// Previously focused app (to restore focus when hiding)
     private var previousFocusedApp: NSRunningApplication?
@@ -417,6 +421,14 @@ class ShadeAppDelegate: NSObject, NSApplicationDelegate {
             object: nil
         )
 
+        // Sidebar capture notification (opens capture in sidebar mode with companion)
+        center.addObserver(
+            self,
+            selector: #selector(handleCaptureSidebarNotification),
+            name: NSNotification.Name("io.shade.note.capture.sidebar"),
+            object: nil
+        )
+
         // Sidebar mode notifications (separate names to avoid userInfo issues)
         center.addObserver(
             self,
@@ -430,18 +442,20 @@ class ShadeAppDelegate: NSObject, NSApplicationDelegate {
             name: NSNotification.Name("io.shade.mode.sidebar-left"),
             object: nil
         )
-        center.addObserver(
-            self,
-            selector: #selector(handleModeSidebarRightNotification),
-            name: NSNotification.Name("io.shade.mode.sidebar-right"),
-            object: nil
-        )
 
         // Legacy mode.set notification (in case old Hammerspoon config is used)
         center.addObserver(
             self,
             selector: #selector(handleModeSetNotification),
             name: NSNotification.Name("io.shade.mode.set"),
+            object: nil
+        )
+
+        // Restore last sidebar arrangement (re-sidebar command)
+        center.addObserver(
+            self,
+            selector: #selector(handleSidebarRestoreNotification),
+            name: NSNotification.Name("io.shade.sidebar.restore"),
             object: nil
         )
 
@@ -474,6 +488,17 @@ class ShadeAppDelegate: NSObject, NSApplicationDelegate {
             }
             capturePreviousFocusedApp()
             showPanelWithSurface()
+
+            // Reset working directory if configured
+            if let cwd = ShadeConfig.shared.terminal?.resolvedCwd() {
+                Task {
+                    do {
+                        try await ShadeNvim.shared.changeDirectory(cwd)
+                    } catch {
+                        Log.debug("Failed to change directory to '\(cwd)': \(error)")
+                    }
+                }
+            }
         }
     }
 
@@ -489,6 +514,17 @@ class ShadeAppDelegate: NSObject, NSApplicationDelegate {
         }
         capturePreviousFocusedApp()
         showPanelWithSurface()
+
+        // Reset working directory if configured
+        if let cwd = ShadeConfig.shared.terminal?.resolvedCwd() {
+            Task {
+                do {
+                    try await ShadeNvim.shared.changeDirectory(cwd)
+                } catch {
+                    Log.debug("Failed to change directory to '\(cwd)': \(error)")
+                }
+            }
+        }
     }
 
     @objc private func handleHideNotification(_ notification: Notification) {
@@ -526,12 +562,7 @@ class ShadeAppDelegate: NSObject, NSApplicationDelegate {
 
     @objc private func handleModeSidebarLeftNotification(_ notification: Notification) {
         Log.debug("IPC: mode.sidebar-left")
-        enterSidebarMode(.sidebarLeft)
-    }
-
-    @objc private func handleModeSidebarRightNotification(_ notification: Notification) {
-        Log.debug("IPC: mode.sidebar-right")
-        enterSidebarMode(.sidebarRight)
+        enterSidebarMode()
     }
 
     @objc private func handleModeSetNotification(_ notification: Notification) {
@@ -549,7 +580,31 @@ class ShadeAppDelegate: NSObject, NSApplicationDelegate {
             exitSidebarMode()
             showPanelWithSurface()
         } else {
-            enterSidebarMode(mode)
+            // Any non-floating mode enters sidebar (always left)
+            enterSidebarMode()
+        }
+    }
+
+    @objc private func handleSidebarRestoreNotification(_ notification: Notification) {
+        Log.debug("IPC: sidebar.restore (lastCompanion=\(lastCompanionBundleID ?? "nil"))")
+
+        // Restore sidebar with the last known companion app
+        // If no companion is remembered, just enter sidebar with current frontmost app
+        if let bundleID = lastCompanionBundleID {
+            // Bring the companion app to front first
+            if let companionApp = NSRunningApplication.runningApplications(withBundleIdentifier: bundleID).first {
+                companionApp.activate()
+                // Small delay to let the companion app come to front before we grab it
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) { [weak self] in
+                    self?.enterSidebarMode(explicitCompanionBundleID: bundleID)
+                }
+            } else {
+                Log.warn("Last companion app not running: \(bundleID)")
+                enterSidebarMode()
+            }
+        } else {
+            // No remembered companion, just use current frontmost
+            enterSidebarMode()
         }
     }
 
@@ -587,9 +642,9 @@ class ShadeAppDelegate: NSObject, NSApplicationDelegate {
             companionBundleID = app.bundleIdentifier
             companionOriginalFrame = getWindowFrame(for: app)
 
-            // Resize new companion
+            // Resize new companion (sidebar is always left)
             if companionOriginalFrame != nil {
-                resizeCompanionForSidebar(app: app, mode: currentMode)
+                resizeCompanionForSidebar(app: app)
             }
         } else {
             // Just track, don't resize (useful for next sidebar entry)
@@ -600,7 +655,8 @@ class ShadeAppDelegate: NSObject, NSApplicationDelegate {
     }
 
     /// Resize a companion app to fit alongside Shade in sidebar mode
-    private func resizeCompanionForSidebar(app: NSRunningApplication, mode: PanelMode) {
+    /// Shade is always on the left, companion on the right
+    private func resizeCompanionForSidebar(app: NSRunningApplication) {
         guard let screen = NSScreen.main ?? NSScreen.screens.first else { return }
         let screenFrame = screen.visibleFrame
 
@@ -611,25 +667,13 @@ class ShadeAppDelegate: NSObject, NSApplicationDelegate {
             sidebarWidth = CGFloat(appConfig.sidebarWidth)
         }
 
-        let companionFrame: CGRect
-        switch mode {
-        case .sidebarLeft:
-            companionFrame = CGRect(
-                x: screenFrame.origin.x + sidebarWidth,
-                y: screenFrame.origin.y,
-                width: screenFrame.width - sidebarWidth,
-                height: screenFrame.height
-            )
-        case .sidebarRight:
-            companionFrame = CGRect(
-                x: screenFrame.origin.x,
-                y: screenFrame.origin.y,
-                width: screenFrame.width - sidebarWidth,
-                height: screenFrame.height
-            )
-        case .floating:
-            return
-        }
+        // Shade on left, companion fills the right side
+        let companionFrame = CGRect(
+            x: screenFrame.origin.x + sidebarWidth,
+            y: screenFrame.origin.y,
+            width: screenFrame.width - sidebarWidth,
+            height: screenFrame.height
+        )
 
         if setWindowFrame(for: app, frame: companionFrame) {
             Log.debug("Resized new companion to: \(companionFrame.debugDescription)")
@@ -638,21 +682,33 @@ class ShadeAppDelegate: NSObject, NSApplicationDelegate {
         }
     }
 
-    /// Enter sidebar mode - dock panel to edge and resize companion app
+    /// Enter sidebar mode - dock Shade panel to left edge and resize companion app
     /// Shade handles ALL window management directly (no Hammerspoon round-trip)
-    private func enterSidebarMode(_ mode: PanelMode) {
-        guard mode != .floating else { return }
+    /// Shade always docks to the left side of the screen.
+    ///
+    /// - Parameter explicitCompanionBundleID: If provided, use this app as companion instead of frontmost
+    private func enterSidebarMode(explicitCompanionBundleID: String? = nil) {
+        // Determine companion app:
+        // 1. If explicit bundle ID provided, use that
+        // 2. Otherwise use the current frontmost non-Shade app
+        let companionApp: NSRunningApplication?
+        if let bundleID = explicitCompanionBundleID {
+            companionApp = NSRunningApplication.runningApplications(withBundleIdentifier: bundleID).first
+            Log.debug("Using explicit companion: \(bundleID)")
+        } else {
+            companionApp = lastNonShadeFrontApp
+        }
 
-        // Use lastNonShadeFrontApp for companion tracking (actively tracked via workspace notifications)
-        // This ensures mode toggling uses the CURRENT focused app, not a stale capture
-        let companionApp = lastNonShadeFrontApp
         companionBundleID = companionApp?.bundleIdentifier
-        currentMode = mode
+        currentMode = .sidebarLeft
+
+        // Remember companion for restoration
+        lastCompanionBundleID = companionBundleID
 
         // Also capture for focus restoration (separate concern)
         capturePreviousFocusedApp()
 
-        Log.debug("Entering sidebar mode: \(mode.rawValue), companion: \(companionApp?.localizedName ?? "none")")
+        Log.debug("Entering sidebar mode, companion: \(companionApp?.localizedName ?? "none")")
 
         // Get screen frame for calculations
         guard let screen = NSScreen.main ?? NSScreen.screens.first else {
@@ -675,35 +731,20 @@ class ShadeAppDelegate: NSObject, NSApplicationDelegate {
             Log.debug("Saved companion original frame: \(companionOriginalFrame?.debugDescription ?? "nil")")
         }
 
-        // Position Shade panel at edge
-        panel?.positionSidebar(mode: mode, width: appConfig.sidebarWidth)
+        // Position Shade panel at left edge
+        panel?.positionSidebar(mode: .sidebarLeft, width: appConfig.sidebarWidth)
 
         // Show the panel (skip repositioning since we just positioned it for sidebar)
         showPanelWithSurface(skipPositioning: true)
 
-        // Resize companion window to fill remaining space
+        // Resize companion window to fill remaining space (right side)
         if let app = companionApp, companionOriginalFrame != nil {
-            let companionFrame: CGRect
-            switch mode {
-            case .sidebarLeft:
-                // Shade on left, companion on right
-                companionFrame = CGRect(
-                    x: screenFrame.origin.x + sidebarWidth,
-                    y: screenFrame.origin.y,
-                    width: screenFrame.width - sidebarWidth,
-                    height: screenFrame.height
-                )
-            case .sidebarRight:
-                // Shade on right, companion on left
-                companionFrame = CGRect(
-                    x: screenFrame.origin.x,
-                    y: screenFrame.origin.y,
-                    width: screenFrame.width - sidebarWidth,
-                    height: screenFrame.height
-                )
-            case .floating:
-                return // Already guarded above
-            }
+            let companionFrame = CGRect(
+                x: screenFrame.origin.x + sidebarWidth,
+                y: screenFrame.origin.y,
+                width: screenFrame.width - sidebarWidth,
+                height: screenFrame.height
+            )
 
             if setWindowFrame(for: app, frame: companionFrame) {
                 Log.debug("Resized companion to: \(companionFrame.debugDescription)")
@@ -837,8 +878,23 @@ class ShadeAppDelegate: NSObject, NSApplicationDelegate {
         // Always create a new capture, even if panel is already visible
         // User explicitly requested a capture, so honor that intent
         Task {
-            let gatheredContext = await ContextGatherer.shared.gather(targetApp: targetApp)
+            var gatheredContext = await ContextGatherer.shared.gather(targetApp: targetApp)
             Log.debug("Gathered context: \(gatheredContext.appType ?? "unknown") from \(gatheredContext.appName ?? "unknown")")
+
+            // Enrich selection text (convert URLs/emails to markdown links)
+            let captureConfig = ShadeConfig.shared.capture ?? CaptureConfig()
+            if captureConfig.enrichText, gatheredContext.selection != nil {
+                if captureConfig.fetchLinkTitles {
+                    // Async title fetching enabled
+                    let timeout = captureConfig.linkTitleTimeout
+                    await gatheredContext.enrichSelectionWithTitles(timeout: timeout)
+                    Log.debug("Enriched selection with titles (timeout: \(timeout)s)")
+                } else {
+                    // Simple enrichment without network requests
+                    gatheredContext.enrichSelection()
+                    Log.debug("Enriched selection (no title fetch)")
+                }
+            }
 
             // Write context for obsidian.nvim templates to read
             StateDirectory.writeContext(gatheredContext)
@@ -865,6 +921,77 @@ class ShadeAppDelegate: NSObject, NSApplicationDelegate {
                 { nvim in try await nvim.openNewCapture(context: captureContext) },
                 onSuccess: { path in Log.debug("Capture opened: \(path)") },
                 onError: { error in Log.error("Failed to open capture: \(error)") }
+            )
+        }
+    }
+
+    @objc private func handleCaptureSidebarNotification(_ notification: Notification) {
+        Log.debug("IPC: note.capture.sidebar")
+
+        // First, check if HS wrote context.json with companion info
+        // If so, use that companion. Otherwise, gather context and use frontmost app as companion.
+        let existingContext = StateDirectory.readGatheredContext()
+        let companionBundleID = existingContext?.companionBundleID
+
+        if let bundleID = companionBundleID {
+            Log.debug("Using HS-provided companion: \(bundleID)")
+        }
+
+        // Capture target app for context gathering (current frontmost)
+        let targetApp = capturePreviousFocusedApp()
+        Log.debug("Target app for context: \(targetApp?.localizedName ?? "none")")
+
+        // Resize panel to sidebar width (uses sidebarWidth from config)
+        // Note: sidebar mode will set full height anyway
+        panel?.resize(width: appConfig.sidebarWidth, height: 1.0)
+
+        Task {
+            // Gather context from target app (or use existing if HS provided it)
+            var gatheredContext: GatheredContext
+            if let existing = existingContext, existing.hasContent {
+                gatheredContext = existing
+                Log.debug("Using HS-provided context")
+            } else {
+                gatheredContext = await ContextGatherer.shared.gather(targetApp: targetApp)
+                Log.debug("Gathered context: \(gatheredContext.appType ?? "unknown") from \(gatheredContext.appName ?? "unknown")")
+            }
+
+            // Enrich selection text
+            let captureConfig = ShadeConfig.shared.capture ?? CaptureConfig()
+            if captureConfig.enrichText, gatheredContext.selection != nil {
+                if captureConfig.fetchLinkTitles {
+                    let timeout = captureConfig.linkTitleTimeout
+                    await gatheredContext.enrichSelectionWithTitles(timeout: timeout)
+                } else {
+                    gatheredContext.enrichSelection()
+                }
+            }
+
+            // Write context for obsidian.nvim templates
+            StateDirectory.writeContext(gatheredContext)
+
+            // Convert to CaptureContext for openNewCapture
+            let captureContext = CaptureContext(
+                appType: gatheredContext.appType,
+                appName: gatheredContext.appName,
+                windowTitle: gatheredContext.windowTitle,
+                url: gatheredContext.url,
+                filePath: gatheredContext.filePath,
+                selection: gatheredContext.selection,
+                detectedLanguage: gatheredContext.detectedLanguage,
+                timestamp: gatheredContext.timestamp
+            )
+
+            // Enter sidebar mode with companion (on main thread)
+            await MainActor.run {
+                self.enterSidebarMode(explicitCompanionBundleID: companionBundleID)
+            }
+
+            // Open capture using native RPC
+            ShadeNvim.shared.connectAndPerform(
+                { nvim in try await nvim.openNewCapture(context: captureContext) },
+                onSuccess: { path in Log.debug("Sidebar capture opened: \(path)") },
+                onError: { error in Log.error("Failed to open sidebar capture: \(error)") }
             )
         }
     }
@@ -1380,9 +1507,9 @@ class ShadeAppDelegate: NSObject, NSApplicationDelegate {
 
         // Apply initial mode from config and show unless startHidden is set
         if !appConfig.startHidden {
-            if appConfig.panelMode != .floating {
-                // Start in sidebar mode
-                enterSidebarMode(appConfig.panelMode)
+            if appConfig.panelMode == .sidebarLeft {
+                // Start in sidebar mode (always left)
+                enterSidebarMode()
             } else {
                 panel.show()
             }

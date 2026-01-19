@@ -462,11 +462,24 @@ actor ShadeNvim {
         guard let api = api, isConnected else {
             throw ShadeNvimError.notConnected
         }
-        
+
         Log.debug("ShadeNvim: Opening file '\(path)'")
         try await api.command("edit \(escapeVimPath(path))")
     }
-    
+
+    /// Change nvim's working directory
+    ///
+    /// - Parameter path: Path to the directory
+    /// - Throws: ShadeNvimError if not connected or command fails
+    func changeDirectory(_ path: String) async throws {
+        guard let api = api, isConnected else {
+            throw ShadeNvimError.notConnected
+        }
+
+        Log.debug("ShadeNvim: Changing directory to '\(path)'")
+        try await api.command("cd \(escapeVimPath(path))")
+    }
+
     /// Get current buffer file path
     ///
     /// - Returns: Current file path, or empty string for unnamed buffer

@@ -49,6 +49,18 @@ public struct GatheredContext: Sendable, Codable, Equatable {
     /// ISO8601 timestamp when context was gathered
     public var timestamp: String?
 
+    // MARK: - Companion Window (for sidebar mode)
+
+    /// Bundle ID of companion app to use when entering sidebar mode
+    /// Populated by Hammerspoon when triggering capture with a specific companion
+    public var companionBundleID: String?
+
+    /// Name of companion app (for logging/debugging)
+    public var companionAppName: String?
+
+    /// Window title of companion window (for logging/debugging)
+    public var companionWindowTitle: String?
+
     public init(
         appType: String? = nil,
         appName: String? = nil,
@@ -61,7 +73,10 @@ public struct GatheredContext: Sendable, Codable, Equatable {
         detectedLanguage: String? = nil,
         line: Int? = nil,
         col: Int? = nil,
-        timestamp: String? = nil
+        timestamp: String? = nil,
+        companionBundleID: String? = nil,
+        companionAppName: String? = nil,
+        companionWindowTitle: String? = nil
     ) {
         self.appType = appType
         self.appName = appName
@@ -75,11 +90,56 @@ public struct GatheredContext: Sendable, Codable, Equatable {
         self.line = line
         self.col = col
         self.timestamp = timestamp
+        self.companionBundleID = companionBundleID
+        self.companionAppName = companionAppName
+        self.companionWindowTitle = companionWindowTitle
     }
 
     /// Whether any meaningful content was gathered
     public var hasContent: Bool {
         selection != nil || url != nil || filePath != nil || windowTitle != nil
+    }
+
+    // MARK: - Text Enrichment
+
+    /// Returns a copy with the selection enriched (URLs/emails converted to markdown)
+    /// This is a synchronous operation that does NOT fetch page titles.
+    public func enrichingSelection() -> GatheredContext {
+        guard let selection = selection, !selection.isEmpty else {
+            return self
+        }
+
+        var enriched = self
+        enriched.selection = TextEnricher.enrich(selection).text
+        return enriched
+    }
+
+    /// Returns a copy with the selection enriched, including async title fetching.
+    /// - Parameter timeout: Timeout per URL for title fetching
+    public func enrichingSelectionWithTitles(timeout: TimeInterval = 5.0) async -> GatheredContext {
+        guard let selection = selection, !selection.isEmpty else {
+            return self
+        }
+
+        var enriched = self
+        enriched.selection = await TextEnricher.enrichWithTitles(selection, timeout: timeout).text
+        return enriched
+    }
+
+    /// Mutating version: enrich the selection in place
+    public mutating func enrichSelection() {
+        guard let selection = selection, !selection.isEmpty else {
+            return
+        }
+        self.selection = TextEnricher.enrich(selection).text
+    }
+
+    /// Mutating version: enrich the selection with async title fetching
+    public mutating func enrichSelectionWithTitles(timeout: TimeInterval = 5.0) async {
+        guard let selection = selection, !selection.isEmpty else {
+            return
+        }
+        self.selection = await TextEnricher.enrichWithTitles(selection, timeout: timeout).text
     }
 }
 
@@ -187,7 +247,7 @@ public final class ContextGatherer: @unchecked Sendable {
             await gatherNvimContext(nvimSocketDir: nvimSocketDir, into: &context)
 
         case .editor, .communication, .other:
-            gatherAccessibilityContext(app: app, into: &context)
+            await gatherAccessibilityContext(app: app, appType: appType, into: &context)
         }
 
         // Detect programming language from gathered context
@@ -207,18 +267,33 @@ public final class ContextGatherer: @unchecked Sendable {
     // MARK: - Type-Specific Gathering
 
     /// Gather context from a browser using JXA
+    /// Selection capture priority: Clipboard (preserves formatting) -> JXA -> AX
     private func gatherBrowserContext(
         app: NSRunningApplication,
         bundleID: String?,
         axDocumentURL: String?,
         into context: inout GatheredContext
     ) async {
-        // Try JXA first for rich context
+        // Try clipboard-based selection first (preserves formatting like tabs/newlines)
+        let clipboardSelection = await captureSelectionViaClipboard()
+        if let selection = clipboardSelection {
+            context.selection = selection
+            logger.debug("Browser selection via clipboard (\(selection.count) chars)")
+        }
+
+        // Try JXA for URL/title (and selection as fallback)
         if let bundleID = bundleID {
             if let browserContext = await jxaBridge.getBrowserContext(forBundleID: bundleID) {
                 context.url = browserContext.url
                 context.windowTitle = browserContext.title ?? context.windowTitle
-                context.selection = browserContext.selection
+
+                // Only use JXA selection if clipboard capture failed
+                if context.selection == nil {
+                    context.selection = browserContext.selection
+                    if browserContext.selection != nil {
+                        logger.debug("Browser selection via JXA fallback")
+                    }
+                }
 
                 if browserContext.hasContent {
                     logger.debug("Browser context via JXA: url=\(browserContext.url ?? "nil")")
@@ -230,7 +305,7 @@ public final class ContextGatherer: @unchecked Sendable {
         // Fallback to AX API
         logger.debug("Browser JXA failed, falling back to AX")
         context.url = axDocumentURL
-        gatherAccessibilityContext(app: app, into: &context)
+        await gatherAccessibilityContext(app: app, appType: .browser, into: &context)
     }
 
     /// Gather context from a terminal, checking for nvim
@@ -256,7 +331,7 @@ public final class ContextGatherer: @unchecked Sendable {
         }
 
         // No nvim or nvim query failed - use AX
-        gatherAccessibilityContext(app: app, into: &context)
+        await gatherAccessibilityContext(app: app, appType: .terminal, into: &context)
     }
 
     /// Gather context from nvim via RPC
@@ -482,10 +557,44 @@ public final class ContextGatherer: @unchecked Sendable {
     }
 
     /// Gather context using Accessibility API
-    private func gatherAccessibilityContext(app: NSRunningApplication, into context: inout GatheredContext) {
-        // Get selection via AX
+    /// For communication apps (Slack, Discord, etc.), tries clipboard capture first
+    /// since Electron apps often normalize whitespace in their AX selection.
+    private func gatherAccessibilityContext(
+        app: NSRunningApplication,
+        appType: AppType,
+        into context: inout GatheredContext
+    ) async {
+        // For communication apps, try clipboard-based selection first
+        // (Electron apps like Slack/Discord strip formatting via AX)
+        if appType == .communication {
+            let clipboardSelection = await captureSelectionViaClipboard()
+            if let selection = clipboardSelection {
+                context.selection = selection
+                logger.debug("Communication app selection via clipboard (\(selection.count) chars)")
+                return
+            }
+            logger.debug("Clipboard capture failed for communication app, falling back to AX")
+        }
+
+        // Fallback: Get selection via AX
         if let focused = accessibilityHelper.getFocusedElement() {
             context.selection = accessibilityHelper.getSelectedText(from: focused)
+            if context.selection != nil {
+                logger.debug("Selection via AX API")
+            }
+        }
+    }
+
+    /// Capture selection via clipboard with full preservation
+    /// Returns nil on failure (caller should fallback to other methods)
+    private func captureSelectionViaClipboard() async -> String? {
+        let result = await ClipboardCapture.captureSelection()
+        switch result {
+        case .success(let text):
+            return text
+        case .failure(let error):
+            logger.debug("Clipboard capture failed: \(error)")
+            return nil
         }
     }
 

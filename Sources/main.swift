@@ -44,8 +44,7 @@ enum ScreenMode: String {
 /// Panel display mode
 enum PanelMode: String, CaseIterable {
     case floating = "floating"           // Centered, floating above other windows (default)
-    case sidebarLeft = "sidebar-left"    // Docked to left edge of screen
-    case sidebarRight = "sidebar-right"  // Docked to right edge of screen
+    case sidebarLeft = "sidebar-left"    // Docked to left edge of screen (sidebar mode)
 }
 
 /// Configuration for shade, parsed from command-line args

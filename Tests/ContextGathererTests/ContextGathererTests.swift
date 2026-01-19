@@ -146,6 +146,95 @@ final class ContextGathererTests: XCTestCase {
             XCTAssertEqual(context.appType, appType.rawValue)
         }
     }
+
+    // MARK: - Text Enrichment Tests
+
+    func testGatheredContext_EnrichingSelection_ConvertsUrls() {
+        let context = GatheredContext(
+            appType: "browser",
+            selection: "Check out https://example.com for more"
+        )
+
+        let enriched = context.enrichingSelection()
+
+        XCTAssertEqual(enriched.appType, "browser") // Other fields preserved
+        XCTAssertTrue(enriched.selection?.contains("[https://example.com](https://example.com)") == true)
+    }
+
+    func testGatheredContext_EnrichingSelection_ConvertsEmails() {
+        let context = GatheredContext(selection: "Contact user@example.com")
+        let enriched = context.enrichingSelection()
+
+        XCTAssertTrue(enriched.selection?.contains("[user@example.com](mailto:user@example.com)") == true)
+    }
+
+    func testGatheredContext_EnrichingSelection_NoSelectionReturnsUnchanged() {
+        let context = GatheredContext(appType: "browser", url: "https://example.com")
+        let enriched = context.enrichingSelection()
+
+        XCTAssertEqual(enriched, context) // Should be identical
+    }
+
+    func testGatheredContext_EnrichingSelection_EmptySelectionReturnsUnchanged() {
+        let context = GatheredContext(selection: "")
+        let enriched = context.enrichingSelection()
+
+        XCTAssertEqual(enriched.selection, "")
+    }
+
+    func testGatheredContext_EnrichSelection_MutatesInPlace() {
+        var context = GatheredContext(selection: "Visit https://test.com")
+        context.enrichSelection()
+
+        XCTAssertTrue(context.selection?.contains("[https://test.com](https://test.com)") == true)
+    }
+
+    func testGatheredContext_EnrichSelection_NoSelectionNoOp() {
+        var context = GatheredContext(appType: "terminal")
+        let original = context
+        context.enrichSelection()
+
+        XCTAssertEqual(context, original) // Should be unchanged
+    }
+
+    func testGatheredContext_EnrichingSelection_PreservesOtherFields() {
+        let context = GatheredContext(
+            appType: "browser",
+            appName: "Brave",
+            bundleID: "com.brave.Browser",
+            windowTitle: "GitHub",
+            url: "https://github.com",
+            selection: "See https://docs.github.com",
+            detectedLanguage: "markdown",
+            timestamp: "2026-01-19T12:00:00Z"
+        )
+
+        let enriched = context.enrichingSelection()
+
+        // All non-selection fields should be preserved
+        XCTAssertEqual(enriched.appType, context.appType)
+        XCTAssertEqual(enriched.appName, context.appName)
+        XCTAssertEqual(enriched.bundleID, context.bundleID)
+        XCTAssertEqual(enriched.windowTitle, context.windowTitle)
+        XCTAssertEqual(enriched.url, context.url)
+        XCTAssertEqual(enriched.detectedLanguage, context.detectedLanguage)
+        XCTAssertEqual(enriched.timestamp, context.timestamp)
+
+        // Selection should be enriched
+        XCTAssertNotEqual(enriched.selection, context.selection)
+        XCTAssertTrue(enriched.selection?.contains("[https://docs.github.com]") == true)
+    }
+
+    func testGatheredContext_EnrichingSelection_MultipleLinks() {
+        let context = GatheredContext(
+            selection: "Links: https://one.com and user@two.com"
+        )
+
+        let enriched = context.enrichingSelection()
+
+        XCTAssertTrue(enriched.selection?.contains("[https://one.com]") == true)
+        XCTAssertTrue(enriched.selection?.contains("[user@two.com](mailto:") == true)
+    }
 }
 
 // Note: MockAccessibilityProvider is defined in AccessibilityHelperTests.swift

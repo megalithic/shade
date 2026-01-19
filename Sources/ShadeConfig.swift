@@ -8,6 +8,7 @@ struct ShadeConfig: Codable {
     var capture: CaptureConfig?
     var window: WindowConfig?
     var notes: NotesConfig?
+    var terminal: TerminalConfig?
 
     /// Load config from XDG config directory
     /// Returns default config if file doesn't exist
@@ -107,11 +108,23 @@ struct CaptureConfig: Codable {
     var placeholderPrefix: String = "<!-- shade:pending:"
     var placeholderSuffix: String = " -->"
 
+    /// Enable text enrichment (auto-detect URLs, emails, convert to markdown links)
+    var enrichText: Bool = true
+
+    /// Fetch page titles for URLs (async, replaces URL with [Title](url))
+    var fetchLinkTitles: Bool = true
+
+    /// Timeout in seconds for fetching page titles
+    var linkTitleTimeout: Double = 5.0
+
     enum CodingKeys: String, CodingKey {
         case workingDirectory
         case asyncEnrichment
         case placeholderPrefix
         case placeholderSuffix
+        case enrichText
+        case fetchLinkTitles
+        case linkTitleTimeout
     }
 
     /// Get working directory, falling back to environment variable
@@ -304,6 +317,26 @@ struct NotesConfig: Codable {
             return (capturesDir as NSString).expandingTildeInPath
         }
         return "\(resolvedHome())/captures"
+    }
+}
+
+// MARK: - Terminal Configuration
+
+/// Configuration for terminal behavior
+struct TerminalConfig: Codable {
+    /// Working directory to set when showing Shade from hidden state
+    /// If nil, no directory change is performed
+    /// Supports ~ for home directory expansion
+    var cwd: String?
+
+    enum CodingKeys: String, CodingKey {
+        case cwd
+    }
+
+    /// Resolve cwd path with tilde expansion
+    func resolvedCwd() -> String? {
+        guard let cwd = cwd, !cwd.isEmpty else { return nil }
+        return (cwd as NSString).expandingTildeInPath
     }
 }
 
