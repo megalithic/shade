@@ -43,12 +43,22 @@ class ShadeAppDelegate: NSObject, NSApplicationDelegate {
     /// Bundle ID of companion app when in sidebar mode (for restoration)
     private var companionBundleID: String?
 
+    /// Current companion window element (for accurate restoration when exiting sidebar)
+    private var companionWindowElement: AXUIElement?
+
     /// Original frame of companion window (for restoration when exiting sidebar)
     private var companionOriginalFrame: CGRect?
 
     /// Last companion bundle ID (persists across hide/show for restoration)
     /// Used to re-enter sidebar mode with the same companion app
     private var lastCompanionBundleID: String?
+
+    /// Last companion window element (for re-sidebar functionality)
+    /// Captured when entering sidebar mode, used for recall
+    private var lastCompanionWindowElement: AXUIElement?
+
+    /// Last companion original frame (for re-sidebar restore)
+    private var lastCompanionOriginalFrame: CGRect?
 
     /// Previously focused app (to restore focus when hiding)
     private var previousFocusedApp: NSRunningApplication?
@@ -418,6 +428,14 @@ class ShadeAppDelegate: NSObject, NSApplicationDelegate {
             object: nil
         )
 
+        // Recall sidebar notification (re-enters sidebar mode with last companion)
+        center.addObserver(
+            self,
+            selector: #selector(handleRecallSidebarNotification),
+            name: NSNotification.Name("io.shade.sidebar.recall"),
+            object: nil
+        )
+
         // Sidebar mode notifications (separate names to avoid userInfo issues)
         center.addObserver(
             self,
@@ -638,8 +656,13 @@ class ShadeAppDelegate: NSObject, NSApplicationDelegate {
     /// Shade handles ALL window management directly (no Hammerspoon round-trip)
     /// Shade always docks to the left side of the screen.
     ///
-    /// - Parameter explicitCompanionBundleID: If provided, use this app as companion instead of frontmost
-    private func enterSidebarMode(explicitCompanionBundleID: String? = nil) {
+    /// - Parameters:
+    ///   - explicitCompanionBundleID: If provided, use this app as companion instead of frontmost
+    ///   - capturedWindowElement: Pre-captured window element (for accurate focused window targeting)
+    private func enterSidebarMode(
+        explicitCompanionBundleID: String? = nil,
+        capturedWindowElement: AXUIElement? = nil
+    ) {
         // Skip if already in sidebar mode (prevents overwriting companionOriginalFrame with resized frame)
         guard currentMode != .sidebarLeft else {
             Log.debug("Already in sidebar mode, skipping re-entry")
@@ -657,6 +680,15 @@ class ShadeAppDelegate: NSObject, NSApplicationDelegate {
             Log.debug("Using explicit companion: \(bundleID)")
         } else {
             companionApp = lastNonShadeFrontApp
+        }
+
+        // Guard: never use Shade itself as companion
+        if let app = companionApp,
+           app.bundleIdentifier == Bundle.main.bundleIdentifier ||
+           app.localizedName == "shade" ||
+           app.processIdentifier == ProcessInfo.processInfo.processIdentifier {
+            Log.warn("Cannot use Shade as sidebar companion, aborting")
+            return
         }
 
         companionBundleID = companionApp?.bundleIdentifier
@@ -685,10 +717,30 @@ class ShadeAppDelegate: NSObject, NSApplicationDelegate {
             sidebarWidth = CGFloat(appConfig.sidebarWidth)
         }
 
+        // Use pre-captured window element if provided, otherwise get window from app
+        // Pre-captured is preferred because it captures the CORRECT focused window
+        // before Shade becomes frontmost (which can change window ordering)
+        let windowElement: AXUIElement?
+        if let captured = capturedWindowElement {
+            windowElement = captured
+            Log.debug("Using pre-captured window element")
+        } else if let app = companionApp {
+            windowElement = getFocusedWindowElement(for: app)
+            Log.debug("Getting window element from app (may not be correct focused window)")
+        } else {
+            windowElement = nil
+        }
+
         // Save companion window's original frame before resizing
-        if let app = companionApp {
-            companionOriginalFrame = getWindowFrame(for: app)
+        if let element = windowElement {
+            companionOriginalFrame = getWindowFrame(for: element)
             Log.debug("Saved companion original frame: \(companionOriginalFrame?.debugDescription ?? "nil")")
+
+            // Save for recall functionality BEFORE resize attempt
+            // (recall needs these even if resize fails)
+            companionWindowElement = element
+            lastCompanionWindowElement = element
+            lastCompanionOriginalFrame = companionOriginalFrame
         }
 
         // Position Shade panel at left edge
@@ -698,7 +750,7 @@ class ShadeAppDelegate: NSObject, NSApplicationDelegate {
         showPanelWithSurface(skipPositioning: true)
 
         // Resize companion window to fill remaining space (right side)
-        if let app = companionApp, companionOriginalFrame != nil {
+        if let element = windowElement, companionOriginalFrame != nil {
             let companionFrame = CGRect(
                 x: screenFrame.origin.x + sidebarWidth,
                 y: screenFrame.origin.y,
@@ -706,7 +758,7 @@ class ShadeAppDelegate: NSObject, NSApplicationDelegate {
                 height: screenFrame.height
             )
 
-            if setWindowFrame(for: app, frame: companionFrame) {
+            if setWindowFrame(for: element, frame: companionFrame) {
                 Log.debug("Resized companion to: \(companionFrame.debugDescription)")
             } else {
                 Log.warn("Failed to resize companion window")
@@ -721,11 +773,11 @@ class ShadeAppDelegate: NSObject, NSApplicationDelegate {
 
         Log.debug("Exiting sidebar mode")
 
-        // Restore companion window to original frame
-        if let bundleID = companionBundleID,
-           let originalFrame = companionOriginalFrame,
-           let app = NSRunningApplication.runningApplications(withBundleIdentifier: bundleID).first {
-            if setWindowFrame(for: app, frame: originalFrame) {
+        // Restore companion window to original frame using stored window element
+        // (more reliable than re-querying the app's focused window)
+        if let windowElement = companionWindowElement,
+           let originalFrame = companionOriginalFrame {
+            if setWindowFrame(for: windowElement, frame: originalFrame) {
                 Log.debug("Restored companion to original frame: \(originalFrame.debugDescription)")
             } else {
                 Log.warn("Failed to restore companion window")
@@ -734,30 +786,36 @@ class ShadeAppDelegate: NSObject, NSApplicationDelegate {
 
         currentMode = .floating
         companionBundleID = nil
+        companionWindowElement = nil
         companionOriginalFrame = nil
     }
 
     // MARK: - Window Management (AXUIElement)
 
-    /// Get the main window's frame for an application using Accessibility API
-    private func getWindowFrame(for app: NSRunningApplication) -> CGRect? {
+    /// Get the focused window element for an application
+    /// Call this EARLY (before async work) when the target app is still frontmost
+    private func getFocusedWindowElement(for app: NSRunningApplication) -> AXUIElement? {
         let appElement = AXUIElementCreateApplication(app.processIdentifier)
 
-        // Get the main or focused window
         var window: AnyObject?
         var result = AXUIElementCopyAttributeValue(appElement, kAXFocusedWindowAttribute as CFString, &window)
         if result != .success {
             result = AXUIElementCopyAttributeValue(appElement, kAXMainWindowAttribute as CFString, &window)
         }
 
-        guard result == .success, let windowElement = window else {
-            Log.debug("Could not get window for \(app.localizedName ?? "app")")
+        guard result == .success, let windowElement = window as! AXUIElement? else {
+            Log.debug("Could not get focused window for \(app.localizedName ?? "app")")
             return nil
         }
 
+        return windowElement
+    }
+
+    /// Get frame from a specific window element
+    private func getWindowFrame(for windowElement: AXUIElement) -> CGRect? {
         // Get position
         var positionValue: AnyObject?
-        guard AXUIElementCopyAttributeValue(windowElement as! AXUIElement, kAXPositionAttribute as CFString, &positionValue) == .success,
+        guard AXUIElementCopyAttributeValue(windowElement, kAXPositionAttribute as CFString, &positionValue) == .success,
               let position = positionValue else {
             return nil
         }
@@ -769,7 +827,7 @@ class ShadeAppDelegate: NSObject, NSApplicationDelegate {
 
         // Get size
         var sizeValue: AnyObject?
-        guard AXUIElementCopyAttributeValue(windowElement as! AXUIElement, kAXSizeAttribute as CFString, &sizeValue) == .success,
+        guard AXUIElementCopyAttributeValue(windowElement, kAXSizeAttribute as CFString, &sizeValue) == .success,
               let size = sizeValue else {
             return nil
         }
@@ -780,6 +838,40 @@ class ShadeAppDelegate: NSObject, NSApplicationDelegate {
         }
 
         return CGRect(origin: point, size: dimensions)
+    }
+
+    /// Set frame for a specific window element
+    @discardableResult
+    private func setWindowFrame(for windowElement: AXUIElement, frame: CGRect) -> Bool {
+        // Set position
+        var point = frame.origin
+        guard let positionValue = AXValueCreate(.cgPoint, &point) else {
+            return false
+        }
+        let posResult = AXUIElementSetAttributeValue(windowElement, kAXPositionAttribute as CFString, positionValue)
+        if posResult != .success {
+            Log.debug("Failed to set window position: \(posResult.rawValue)")
+        }
+
+        // Set size
+        var size = frame.size
+        guard let sizeValue = AXValueCreate(.cgSize, &size) else {
+            return false
+        }
+        let sizeResult = AXUIElementSetAttributeValue(windowElement, kAXSizeAttribute as CFString, sizeValue)
+        if sizeResult != .success {
+            Log.debug("Failed to set window size: \(sizeResult.rawValue)")
+        }
+
+        return posResult == .success && sizeResult == .success
+    }
+
+    /// Get the main window's frame for an application using Accessibility API
+    private func getWindowFrame(for app: NSRunningApplication) -> CGRect? {
+        guard let windowElement = getFocusedWindowElement(for: app) else {
+            return nil
+        }
+        return getWindowFrame(for: windowElement)
     }
 
     /// Set the main window's frame for an application using Accessibility API
@@ -888,33 +980,22 @@ class ShadeAppDelegate: NSObject, NSApplicationDelegate {
     @objc private func handleCaptureSidebarNotification(_ notification: Notification) {
         Log.debug("IPC: note.capture.sidebar")
 
-        // First, check if HS wrote context.json with companion info
-        // If so, use that companion. Otherwise, gather context and use frontmost app as companion.
-        let existingContext = StateDirectory.readGatheredContext()
-        let companionBundleID = existingContext?.companionBundleID
-
-        if let bundleID = companionBundleID {
-            Log.debug("Using HS-provided companion: \(bundleID)")
-        }
-
-        // Capture target app for context gathering (current frontmost)
+        // CRITICAL: Capture target app AND its focused window element BEFORE any async work
+        // The window element must be captured now while the target app is still frontmost,
+        // otherwise we'll get the wrong window when the user has multiple windows open.
         let targetApp = capturePreviousFocusedApp()
-        Log.debug("Target app for context: \(targetApp?.localizedName ?? "none")")
+        let targetWindowElement = targetApp.flatMap { getFocusedWindowElement(for: $0) }
+        Log.debug("Target app for context: \(targetApp?.localizedName ?? "none"), window captured: \(targetWindowElement != nil)")
 
         // Resize panel to sidebar width (uses sidebarWidth from config)
         // Note: sidebar mode will set full height anyway
         panel?.resize(width: appConfig.sidebarWidth, height: 1.0)
 
         Task {
-            // Gather context from target app (or use existing if HS provided it)
-            var gatheredContext: GatheredContext
-            if let existing = existingContext, existing.hasContent {
-                gatheredContext = existing
-                Log.debug("Using HS-provided context")
-            } else {
-                gatheredContext = await ContextGatherer.shared.gather(targetApp: targetApp)
-                Log.debug("Gathered context: \(gatheredContext.appType ?? "unknown") from \(gatheredContext.appName ?? "unknown")")
-            }
+            // Always gather fresh context for sidebar captures
+            // (Unlike image capture, HS doesn't pre-write context for sidebar mode)
+            var gatheredContext = await ContextGatherer.shared.gather(targetApp: targetApp)
+            Log.debug("Gathered context: \(gatheredContext.appType ?? "unknown") from \(gatheredContext.appName ?? "unknown")")
 
             // Enrich selection text
             let captureConfig = ShadeConfig.shared.capture ?? CaptureConfig()
@@ -943,8 +1024,12 @@ class ShadeAppDelegate: NSObject, NSApplicationDelegate {
             )
 
             // Enter sidebar mode with companion (on main thread)
+            // Pass the pre-captured window element for accurate window targeting
             await MainActor.run {
-                self.enterSidebarMode(explicitCompanionBundleID: companionBundleID)
+                self.enterSidebarMode(
+                    explicitCompanionBundleID: targetApp?.bundleIdentifier,
+                    capturedWindowElement: targetWindowElement
+                )
             }
 
             // Open capture using native RPC
@@ -953,6 +1038,63 @@ class ShadeAppDelegate: NSObject, NSApplicationDelegate {
                 onSuccess: { path in Log.debug("Sidebar capture opened: \(path)") },
                 onError: { error in Log.error("Failed to open sidebar capture: \(error)") }
             )
+        }
+    }
+
+    /// Recall sidebar mode with the last companion window
+    /// Re-enters sidebar mode using the previously stored companion window element and frame
+    @objc private func handleRecallSidebarNotification(_ notification: Notification) {
+        Log.debug("IPC: sidebar.recall")
+
+        // Check if we have a stored companion window from a previous sidebar session
+        guard let windowElement = lastCompanionWindowElement,
+              let originalFrame = lastCompanionOriginalFrame,
+              let bundleID = lastCompanionBundleID else {
+            Log.warn("No previous sidebar companion to recall")
+            return
+        }
+
+        Log.debug("Recalling sidebar with companion: \(bundleID)")
+
+        // Get screen frame for calculations
+        guard let screen = NSScreen.main ?? NSScreen.screens.first else {
+            Log.warn("No screen available for sidebar recall")
+            return
+        }
+        let screenFrame = screen.visibleFrame
+
+        // Calculate sidebar width
+        let sidebarWidth: CGFloat
+        if appConfig.sidebarWidth <= 1.0 {
+            sidebarWidth = screenFrame.width * CGFloat(appConfig.sidebarWidth)
+        } else {
+            sidebarWidth = CGFloat(appConfig.sidebarWidth)
+        }
+
+        // Store current session state
+        companionBundleID = bundleID
+        companionWindowElement = windowElement
+        companionOriginalFrame = originalFrame
+        currentMode = .sidebarLeft
+
+        // Position Shade panel at left edge
+        panel?.positionSidebar(mode: .sidebarLeft, width: appConfig.sidebarWidth)
+
+        // Show the panel
+        showPanelWithSurface(skipPositioning: true)
+
+        // Resize companion window to fill remaining space (right side)
+        let companionFrame = CGRect(
+            x: screenFrame.origin.x + sidebarWidth,
+            y: screenFrame.origin.y,
+            width: screenFrame.width - sidebarWidth,
+            height: screenFrame.height
+        )
+
+        if setWindowFrame(for: windowElement, frame: companionFrame) {
+            Log.debug("Recalled sidebar, resized companion to: \(companionFrame.debugDescription)")
+        } else {
+            Log.warn("Failed to resize recalled companion window")
         }
     }
 
@@ -1287,9 +1429,22 @@ class ShadeAppDelegate: NSObject, NSApplicationDelegate {
     /// as a fallback, ensuring we always have a valid app for context gathering even if:
     /// - The panel is already visible
     /// - Shade has already become frontmost by the time this is called
+    ///
+    /// IMPORTANT: This function now distinguishes between two use cases:
+    /// 1. Focus restoration: uses previousFocusedApp (set when panel first becomes visible)
+    /// 2. Context gathering: uses lastNonShadeFrontApp (proactively tracked, always current)
+    ///
+    /// The return value is for CONTEXT GATHERING, which needs the most recent non-Shade app.
     @discardableResult
     private func capturePreviousFocusedApp() -> NSRunningApplication? {
-        // Only update previousFocusedApp if panel is not visible (avoid overwriting during toggle)
+        // Diagnostic logging
+        Log.debug("capturePreviousFocusedApp: isPanelVisible=\(isPanelVisible)")
+        Log.debug("  lastNonShadeFrontApp: \(lastNonShadeFrontApp?.localizedName ?? "nil") (\(lastNonShadeFrontApp?.bundleIdentifier ?? "?"))")
+        Log.debug("  previousFocusedApp: \(previousFocusedApp?.localizedName ?? "nil") (\(previousFocusedApp?.bundleIdentifier ?? "?"))")
+        Log.debug("  frontmostApplication: \(NSWorkspace.shared.frontmostApplication?.localizedName ?? "nil")")
+
+        // For FOCUS RESTORATION: only update previousFocusedApp when panel becomes visible
+        // This captures where to return focus when hiding the panel
         if !isPanelVisible {
             let frontApp = NSWorkspace.shared.frontmostApplication
             // Don't save Shade itself as the previous app
@@ -1299,17 +1454,46 @@ class ShadeAppDelegate: NSObject, NSApplicationDelegate {
                           frontApp?.processIdentifier == ProcessInfo.processInfo.processIdentifier
             if !isShade {
                 previousFocusedApp = frontApp
-                Log.debug("Captured previous app: \(frontApp?.localizedName ?? "none")")
+                Log.debug("Updated previousFocusedApp (for focus restoration): \(frontApp?.localizedName ?? "none")")
             } else if let tracked = lastNonShadeFrontApp {
                 // Shade is frontmost (timing issue) - use proactively tracked app
                 previousFocusedApp = tracked
-                Log.debug("Captured previous app (via tracking): \(tracked.localizedName ?? "none")")
+                Log.debug("Updated previousFocusedApp via tracking: \(tracked.localizedName ?? "none")")
             }
         }
 
-        // Always return a valid app for context gathering
-        // Priority: previousFocusedApp (explicit capture) > lastNonShadeFrontApp (proactive tracking)
-        let result = previousFocusedApp ?? lastNonShadeFrontApp
+        // For CONTEXT GATHERING: always use lastNonShadeFrontApp (proactively tracked)
+        // This is the most recent non-Shade app, even if user switched apps while panel is visible
+        // Fallback to previousFocusedApp only if tracking hasn't captured anything yet
+        var result = lastNonShadeFrontApp ?? previousFocusedApp
+
+        // COLD START BOOTSTRAP: If we have no tracked app, check for bootstrap context
+        // This happens when Shade was just launched and became frontmost before
+        // the workspace observer could track any apps. Hammerspoon writes a bootstrap
+        // context file with the bundleID of the app that was frontmost when the
+        // capture was triggered.
+        if result == nil {
+            Log.debug("No tracked app - checking for bootstrap context")
+            if let bootstrapContext = StateDirectory.readGatheredContext(),
+               let bundleID = bootstrapContext.bundleID,
+               !bundleID.isEmpty {
+                Log.debug("Found bootstrap context with bundleID: \(bundleID)")
+                // Find the running app with this bundle ID
+                if let bootstrapApp = NSRunningApplication.runningApplications(withBundleIdentifier: bundleID).first {
+                    result = bootstrapApp
+                    // Also update tracking so subsequent calls work
+                    lastNonShadeFrontApp = bootstrapApp
+                    previousFocusedApp = bootstrapApp
+                    Log.debug("Resolved bootstrap app: \(bootstrapApp.localizedName ?? "unknown")")
+                } else {
+                    Log.warn("Bootstrap bundleID not found in running apps: \(bundleID)")
+                }
+            } else {
+                Log.debug("No bootstrap context available")
+            }
+        }
+
+        Log.debug("capturePreviousFocusedApp returning: \(result?.localizedName ?? "nil") (\(result?.bundleIdentifier ?? "?"))")
         if result == nil {
             Log.warn("No previous app available for context - this should not happen")
         }

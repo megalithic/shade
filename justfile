@@ -130,15 +130,53 @@ release-info: release
     @otool -L .build/release/{{name}} | head -20
 
 # Install release binary to ~/.local/bin (or $PREFIX/bin)
-# Also installs MLX metallib alongside the binary
+# Idempotent: kills running shade, shows version diff, ready to use immediately
 install:
-    @rm -f .build/.lock
-    @just release
-    @just install-metal-release 2>/dev/null || echo "Note: MLX metallib not compiled"
-    @mkdir -p {{install_dir}}
-    cp .build/release/{{name}} {{install_dir}}/{{name}}
-    @if [ -f .build/release/mlx.metallib ]; then cp .build/release/mlx.metallib {{install_dir}}/mlx.metallib; fi
-    @echo "Installed to {{install_dir}}/{{name}}"
+    #!/usr/bin/env bash
+    set -euo pipefail
+
+    INSTALL_PATH="{{install_dir}}/{{name}}"
+
+    # Capture previous version (if exists)
+    PREV_VERSION="(none)"
+    if [[ -f "$INSTALL_PATH" ]]; then
+        PREV_VERSION=$("$INSTALL_PATH" --version 2>/dev/null || echo "unknown")
+    fi
+
+    # Kill running shade instances
+    if pgrep -x {{name}} > /dev/null 2>&1; then
+        echo "Stopping running shade..."
+        pkill -x {{name}} || true
+    fi
+
+    # Build release
+    rm -f .build/.lock
+    just release
+
+    # Install metallib (optional)
+    just install-metal-release 2>/dev/null || echo "Note: MLX metallib not compiled"
+
+    # Install binary
+    mkdir -p {{install_dir}}
+    cp .build/release/{{name}} "$INSTALL_PATH"
+    if [[ -f .build/release/mlx.metallib ]]; then
+        cp .build/release/mlx.metallib {{install_dir}}/mlx.metallib
+    fi
+
+    # Capture new version
+    NEW_VERSION=$("$INSTALL_PATH" --version 2>/dev/null || echo "unknown")
+
+    # Report
+    echo ""
+    echo "═══════════════════════════════════════════════════"
+    echo "  shade installed to $INSTALL_PATH"
+    echo "═══════════════════════════════════════════════════"
+    echo "  Previous: $PREV_VERSION"
+    echo "  Current:  $NEW_VERSION"
+    echo "═══════════════════════════════════════════════════"
+    echo ""
+    echo "Ready to use. Launch via Hammerspoon or:"
+    echo "  $INSTALL_PATH --hidden"
 
 # Uninstall from ~/.local/bin
 uninstall:

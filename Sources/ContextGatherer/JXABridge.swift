@@ -125,11 +125,11 @@ public final class JXABridge: Sendable {
             if (!tab) {
                 return JSON.stringify({error: "no_active_tab"});
             }
-            
+
             var url = null;
             var title = null;
             var selection = "";
-            
+
             try { url = tab.url(); } catch(e) {}
             try { title = tab.title(); } catch(e) {}
             try {
@@ -137,7 +137,7 @@ public final class JXABridge: Sendable {
             } catch(e) {
                 // Selection extraction failed - this is common and OK
             }
-            
+
             return JSON.stringify({
                 url: url,
                 title: title,

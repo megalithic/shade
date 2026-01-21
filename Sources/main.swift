@@ -1,6 +1,89 @@
 import AppKit
 import GhosttyKit
 
+// MARK: - Version Info
+
+/// Get version string (matches MenuBarManager format)
+func getVersionString() -> String {
+    let bundlePath = Bundle.main.bundlePath
+    let buildPrefix: String? = {
+        if bundlePath.contains(".build/debug") {
+            return "debug"
+        } else if bundlePath.contains(".build/release") {
+            return "release"
+        }
+        return nil
+    }()
+
+    // Get git SHA
+    let process = Process()
+    process.executableURL = URL(fileURLWithPath: "/usr/bin/git")
+    process.arguments = ["rev-parse", "--short=8", "HEAD"]
+
+    let possiblePaths = [
+        NSHomeDirectory() + "/code/shade",
+        NSHomeDirectory() + "/.local/share/shade",
+        bundlePath
+    ]
+
+    for path in possiblePaths {
+        let gitDir = path + "/.git"
+        if FileManager.default.fileExists(atPath: gitDir) {
+            process.currentDirectoryURL = URL(fileURLWithPath: path)
+            break
+        }
+    }
+
+    let pipe = Pipe()
+    process.standardOutput = pipe
+    process.standardError = FileHandle.nullDevice
+
+    var gitSHA = "unknown"
+    do {
+        try process.run()
+        process.waitUntilExit()
+        if process.terminationStatus == 0 {
+            let data = pipe.fileHandleForReading.readDataToEndOfFile()
+            if let sha = String(data: data, encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines),
+               !sha.isEmpty {
+                gitSHA = sha
+            }
+        }
+    } catch {}
+
+    if let prefix = buildPrefix {
+        return "\(prefix)-\(gitSHA)"
+    }
+    return gitSHA
+}
+
+// Handle --version early (before any initialization)
+if CommandLine.arguments.contains("--version") || CommandLine.arguments.contains("-V") {
+    print(getVersionString())
+    exit(0)
+}
+
+// MARK: - Single Instance Check
+
+/// Ensure only one instance of shade runs at a time
+func ensureSingleInstance() {
+    let myPID = ProcessInfo.processInfo.processIdentifier
+    let runningShades = NSRunningApplication.runningApplications(withBundleIdentifier: Bundle.main.bundleIdentifier ?? "io.shade")
+        .filter { $0.processIdentifier != myPID }
+
+    if !runningShades.isEmpty {
+        // Another instance is running - terminate it first
+        for app in runningShades {
+            fputs("[shade] Terminating existing instance (PID: \(app.processIdentifier))\n", stderr)
+            app.terminate()
+        }
+        // Give it a moment to clean up
+        Thread.sleep(forTimeInterval: 0.3)
+    }
+}
+
+ensureSingleInstance()
+
 // MARK: - Logging
 
 /// Simple logging utility with verbose flag support
@@ -216,6 +299,7 @@ struct AppConfig {
           --capture-width <value>  Capture panel width (default: 0.4)
           --capture-height <value> Capture panel height (default: 0.4)
           -v, --verbose            Enable verbose logging
+          -V, --version            Show version and exit
           --help                   Show this help
 
         Sidebar Mode:

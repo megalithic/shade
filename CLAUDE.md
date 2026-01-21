@@ -118,6 +118,84 @@ swift test                           # All tests
 swift test --filter MsgpackRpcTests  # Specific test target
 ```
 
+## AI Agent Binary Workflow
+
+**CRITICAL**: Shade has single-instance protection - launching a new instance terminates any existing one. Hammerspoon controls which binary to use via `_G.SHADE_VER`.
+
+### Binary Selection
+
+| `_G.SHADE_VER` | Path | When to Use |
+|----------------|------|-------------|
+| `"install"` | `~/.local/bin/shade` | Normal usage, after work is complete |
+| `"debug"` | `~/code/shade/.build/debug/shade` | Active debugging, development |
+| `"release"` | `~/code/shade/.build/release/shade` | Testing release builds |
+| `"/custom/path"` | Custom path | Special testing scenarios |
+
+### During Development/Debugging
+
+When investigating bugs or developing features:
+
+```bash
+# 1. Build debug version
+just build
+
+# 2. Set Hammerspoon to use debug binary
+hs -c '_G.SHADE_VER = "debug"'
+
+# 3. Launch shade (any method - HS hotkey, direct run, etc.)
+#    New instance auto-terminates any existing shade
+```
+
+### After Work Complete (with /end command)
+
+After getting push consent and completing `/end`:
+
+```bash
+# 1. Build and install release
+just install
+
+# 2. Set Hammerspoon back to installed binary
+hs -c '_G.SHADE_VER = "install"'
+
+# 3. Launch shade to use installed version
+#    New instance auto-terminates any existing shade
+```
+
+### Checking Current Binary
+
+```lua
+-- In HS console or via hs -c:
+require("lib.interop.shade").getBinaryInfo()
+-- Returns: { version = "install", path = "...", exists = true }
+
+-- Check what version is set:
+print(_G.SHADE_VER)
+```
+
+### Decision Tree for AI Agents
+
+1. **Starting debug session?** → `just build` → `hs -c '_G.SHADE_VER = "debug"'` → launch shade
+2. **Need user to test current state?** → Keep existing shade running, observe behavior
+3. **Finishing work (/end)?** → `just install` → `hs -c '_G.SHADE_VER = "install"'` → launch shade
+4. **Unclear which binary running?** → `hs -c 'print(require("lib.interop.shade").getBinaryInfo().version)'`
+
+### Launching Shade for User
+
+**Rules for launching shade:**
+
+1. **Always launch hidden** - use `startHidden = true` so shade doesn't steal focus
+2. **Always report the version** - tell user which binary is running
+3. **NEVER use sleep** - check status via HS, not bash sleep (sleep NEVER works reliably)
+
+```bash
+# Launch hidden and report version (single HS call, no sleep)
+hs -c 'local s = require("lib.interop.shade"); s.configure({ startHidden = true }); s.launch(); local i = s.getBinaryInfo(); return "Launched [" .. i.version .. "] @ " .. i.path'
+```
+
+Example response: "Launched shade **[debug]** from `~/code/shade/.build/debug/shade` (hidden)"
+
+**CRITICAL**: Never use `sleep` in bash commands to wait for shade. If you need to verify shade is running, use `hs -c 'require("lib.interop.shade").isRunning()'`.
+
 ## IPC Protocol
 
 Shade listens for macOS distributed notifications:
@@ -261,3 +339,4 @@ jj log
 - Don't hardcode paths (use StateDirectory or config)
 - Don't make Hammerspoon send nvim commands directly (Shade handles nvim RPC)
 - Don't modify `~/.config/shade/config.json` directly (it's Nix-generated)
+- **Don't use `sleep` in bash commands** - it NEVER works reliably. Use HS to check state (e.g., `hs -c 'require("lib.interop.shade").isRunning()'`) or chain commands in a single HS call
