@@ -420,10 +420,20 @@ class ShadePanel: NSPanel {
 
     /// Show the focus border (animate if configured)
     func showFocusBorder() {
-        guard let config = focusBorderConfig, config.enabled, let borderView = borderView else { return }
+        guard let config = focusBorderConfig, config.enabled, let borderView = borderView else {
+            Log.debug("showFocusBorder: early return - config=\(focusBorderConfig != nil), enabled=\(focusBorderConfig?.enabled ?? false), borderView=\(self.borderView != nil)")
+            return
+        }
 
         // Update border frame in case window was resized
         updateBorderFrame()
+
+        // Ensure border window is visible (child windows should follow parent, but be explicit)
+        if let borderWin = borderWindow, !borderWin.isVisible {
+            Log.debug("showFocusBorder: border window not visible, ordering front")
+            borderWin.orderFront(nil)
+        }
+        Log.debug("showFocusBorder: borderWindow frame=\(borderWindow?.frame.debugDescription ?? "nil"), isVisible=\(borderWindow?.isVisible ?? false)")
 
         if config.animated {
             NSAnimationContext.runAnimationGroup { context in

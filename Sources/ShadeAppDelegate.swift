@@ -188,14 +188,6 @@ class ShadeAppDelegate: NSObject, NSApplicationDelegate {
                 NSApp.terminate(nil)
             }
 
-            // Wire up experimental settings callback
-            manager.onSettingsChanged = { [weak self] autoTrack, autoResize in
-                guard self != nil else { return }
-                Log.debug("Experimental settings changed: autoTrack=\(autoTrack), autoResize=\(autoResize)")
-                // Settings are read directly from UserDefaults when needed
-                // No additional wiring required - the workspace observer checks these values
-            }
-
             manager.setup()
 
             // Wire up MLX callbacks to menu bar
@@ -235,9 +227,6 @@ class ShadeAppDelegate: NSObject, NSApplicationDelegate {
             } else {
                 manager.setModelState(.disabled)
             }
-
-            // Log initial experimental settings
-            Log.debug("Experimental settings: autoTrack=\(manager.autoTrackCompanion), autoResize=\(manager.autoResizeCompanion)")
         }
     }
 
@@ -610,48 +599,11 @@ class ShadeAppDelegate: NSObject, NSApplicationDelegate {
 
     // MARK: - Sidebar Mode
 
-    /// Handle a potential companion change (experimental feature)
+    /// Handle a potential companion change
     /// Called when a non-Shade app becomes frontmost while in sidebar mode
+    /// NOTE: Dynamic companion switching has been disabled (was an experimental feature)
     private func handlePotentialCompanionChange(_ app: NSRunningApplication) {
-        // Only relevant in sidebar mode
-        guard currentMode != .floating else { return }
-
-        // Read settings directly from UserDefaults (thread-safe, avoids MainActor issues)
-        let autoTrack = UserDefaults.standard.bool(forKey: "shade.autoTrackCompanion")
-        let autoResize = UserDefaults.standard.bool(forKey: "shade.autoResizeCompanion")
-
-        // Check if auto-track is enabled
-        guard autoTrack else { return }
-
-        // Skip if this is already the current companion
-        guard app.bundleIdentifier != companionBundleID else { return }
-
-        Log.debug("Potential companion change: \(app.localizedName ?? "unknown") (autoTrack=\(autoTrack), autoResize=\(autoResize))")
-
-        // If auto-resize is also enabled, update the companion and resize
-        if autoResize {
-            // Restore previous companion first
-            if let prevBundleID = companionBundleID,
-               let prevFrame = companionOriginalFrame,
-               let prevApp = NSRunningApplication.runningApplications(withBundleIdentifier: prevBundleID).first {
-                _ = setWindowFrame(for: prevApp, frame: prevFrame)
-                Log.debug("Restored previous companion: \(prevApp.localizedName ?? "unknown")")
-            }
-
-            // Update to new companion
-            companionBundleID = app.bundleIdentifier
-            companionOriginalFrame = getWindowFrame(for: app)
-
-            // Resize new companion (sidebar is always left)
-            if companionOriginalFrame != nil {
-                resizeCompanionForSidebar(app: app)
-            }
-        } else {
-            // Just track, don't resize (useful for next sidebar entry)
-            Log.debug("Tracking new potential companion (no resize): \(app.localizedName ?? "unknown")")
-            // Note: We don't update companionBundleID here - that only happens on sidebar entry
-            // or when autoResize is enabled
-        }
+        // Feature disabled - companion is only set when entering sidebar mode
     }
 
     /// Resize a companion app to fit alongside Shade in sidebar mode
@@ -688,6 +640,14 @@ class ShadeAppDelegate: NSObject, NSApplicationDelegate {
     ///
     /// - Parameter explicitCompanionBundleID: If provided, use this app as companion instead of frontmost
     private func enterSidebarMode(explicitCompanionBundleID: String? = nil) {
+        // Skip if already in sidebar mode (prevents overwriting companionOriginalFrame with resized frame)
+        guard currentMode != .sidebarLeft else {
+            Log.debug("Already in sidebar mode, skipping re-entry")
+            // Just show panel in case it was hidden
+            showPanelWithSurface(skipPositioning: true)
+            return
+        }
+
         // Determine companion app:
         // 1. If explicit bundle ID provided, use that
         // 2. Otherwise use the current frontmost non-Shade app
@@ -1486,6 +1446,7 @@ class ShadeAppDelegate: NSObject, NSApplicationDelegate {
 
         // Configure focus border from config
         let focusBorderConfig = ShadeConfig.shared.window?.focusBorder
+        Log.debug("Focus border config: \(focusBorderConfig != nil ? "present (enabled=\(focusBorderConfig!.enabled), color=\(focusBorderConfig!.color))" : "nil")")
         panel.configureFocusBorder(config: focusBorderConfig)
 
         // Configure unfocused dimming from config

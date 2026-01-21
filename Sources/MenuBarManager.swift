@@ -125,13 +125,6 @@ final class MenuBarManager {
         }
     }
 
-    // MARK: - UserDefaults Keys
-
-    private enum DefaultsKeys {
-        static let autoTrackCompanion = "shade.autoTrackCompanion"
-        static let autoResizeCompanion = "shade.autoResizeCompanion"
-    }
-
     // MARK: - Properties
 
     /// The status item in the menubar
@@ -142,10 +135,6 @@ final class MenuBarManager {
 
     /// The menu attached to the status item
     private var menu: NSMenu?
-
-    /// Menu items for toggles (for updating checkmarks)
-    private var autoTrackMenuItem: NSMenuItem?
-    private var autoResizeMenuItem: NSMenuItem?
 
     /// Menu items for background activity status (for dynamic updates)
     private var modelStatusMenuItem: NSMenuItem?
@@ -177,35 +166,6 @@ final class MenuBarManager {
     /// Callback for quit action
     var onQuit: (() -> Void)?
 
-    /// Callback when experimental settings change
-    var onSettingsChanged: ((_ autoTrack: Bool, _ autoResize: Bool) -> Void)?
-
-    // MARK: - Experimental Settings (persisted)
-
-    /// Whether to auto-track the focused non-Shade app as potential companion
-    var autoTrackCompanion: Bool {
-        get { UserDefaults.standard.bool(forKey: DefaultsKeys.autoTrackCompanion) }
-        set {
-            UserDefaults.standard.set(newValue, forKey: DefaultsKeys.autoTrackCompanion)
-            autoTrackMenuItem?.state = newValue ? .on : .off
-            notifySettingsChanged()
-        }
-    }
-
-    /// Whether to auto-resize companion when Shade is in sidebar mode and focused
-    var autoResizeCompanion: Bool {
-        get { UserDefaults.standard.bool(forKey: DefaultsKeys.autoResizeCompanion) }
-        set {
-            UserDefaults.standard.set(newValue, forKey: DefaultsKeys.autoResizeCompanion)
-            autoResizeMenuItem?.state = newValue ? .on : .off
-            notifySettingsChanged()
-        }
-    }
-
-    private func notifySettingsChanged() {
-        onSettingsChanged?(autoTrackCompanion, autoResizeCompanion)
-    }
-    
     // MARK: - Initialization
     
     init() {}
@@ -299,37 +259,6 @@ final class MenuBarManager {
         let logsItem = NSMenuItem(title: "Show Logs...", action: #selector(handleShowLogs), keyEquivalent: "l")
         logsItem.target = self
         menu.addItem(logsItem)
-
-        menu.addItem(NSMenuItem.separator())
-
-        // Experimental settings section
-        let settingsHeader = NSMenuItem(title: "Sidebar Experiments", action: nil, keyEquivalent: "")
-        settingsHeader.isEnabled = false
-        menu.addItem(settingsHeader)
-
-        // Auto-track companion toggle
-        let autoTrackItem = NSMenuItem(
-            title: "Auto-track companion",
-            action: #selector(handleAutoTrackToggle),
-            keyEquivalent: ""
-        )
-        autoTrackItem.target = self
-        autoTrackItem.state = autoTrackCompanion ? .on : .off
-        autoTrackItem.toolTip = "Track focused app as potential companion for sidebar mode"
-        menu.addItem(autoTrackItem)
-        self.autoTrackMenuItem = autoTrackItem
-
-        // Auto-resize companion toggle
-        let autoResizeItem = NSMenuItem(
-            title: "Auto-resize companion",
-            action: #selector(handleAutoResizeToggle),
-            keyEquivalent: ""
-        )
-        autoResizeItem.target = self
-        autoResizeItem.state = autoResizeCompanion ? .on : .off
-        autoResizeItem.toolTip = "Automatically resize companion when switching apps in sidebar mode"
-        menu.addItem(autoResizeItem)
-        self.autoResizeMenuItem = autoResizeItem
 
         menu.addItem(NSMenuItem.separator())
 
@@ -484,16 +413,6 @@ final class MenuBarManager {
     
     @objc private func handleQuit() {
         onQuit?()
-    }
-
-    @objc private func handleAutoTrackToggle() {
-        autoTrackCompanion.toggle()
-        Log.debug("MenuBarManager: Auto-track companion = \(autoTrackCompanion)")
-    }
-
-    @objc private func handleAutoResizeToggle() {
-        autoResizeCompanion.toggle()
-        Log.debug("MenuBarManager: Auto-resize companion = \(autoResizeCompanion)")
     }
 
     @objc private func handleShowLogs() {

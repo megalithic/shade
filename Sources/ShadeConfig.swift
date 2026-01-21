@@ -127,6 +127,20 @@ struct CaptureConfig: Codable {
         case linkTitleTimeout
     }
 
+    /// Custom decoder to handle missing keys with defaults
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        workingDirectory = try container.decodeIfPresent(String.self, forKey: .workingDirectory)
+        asyncEnrichment = try container.decodeIfPresent(Bool.self, forKey: .asyncEnrichment) ?? true
+        placeholderPrefix = try container.decodeIfPresent(String.self, forKey: .placeholderPrefix) ?? "<!-- shade:pending:"
+        placeholderSuffix = try container.decodeIfPresent(String.self, forKey: .placeholderSuffix) ?? " -->"
+        enrichText = try container.decodeIfPresent(Bool.self, forKey: .enrichText) ?? true
+        fetchLinkTitles = try container.decodeIfPresent(Bool.self, forKey: .fetchLinkTitles) ?? true
+        linkTitleTimeout = try container.decodeIfPresent(Double.self, forKey: .linkTitleTimeout) ?? 5.0
+    }
+
+    init() {}
+
     /// Get working directory, falling back to environment variable
     func resolvedWorkingDirectory() -> String {
         if let dir = workingDirectory, !dir.isEmpty {
