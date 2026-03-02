@@ -89,10 +89,10 @@ class ShadePanel: NSPanel {
     private func configurePanel() {
         // Panel behavior
         title = "shade"
-        isFloatingPanel = true                    // Float above normal windows
+        isFloatingPanel = false                   // Don't auto-float (we control level manually)
         becomesKeyOnlyIfNeeded = true            // Only become key if needed
         hidesOnDeactivate = false                // Stay visible when app loses focus
-        level = .floating                         // Floating window level
+        level = .normal                          // Start at normal level (not floating)
         collectionBehavior = [
             .canJoinAllSpaces,                   // Visible on all spaces
             .fullScreenAuxiliary                 // Can appear over fullscreen apps
@@ -220,7 +220,9 @@ class ShadePanel: NSPanel {
     /// Set "always on top" mode explicitly
     func setAlwaysOnTop(_ enabled: Bool) {
         alwaysOnTop = enabled
-        let newLevel: NSWindow.Level = enabled ? .screenSaver : .floating
+        // When enabled: floating level (above normal windows)
+        // When disabled: normal level (can go behind other windows)
+        let newLevel: NSWindow.Level = enabled ? .floating : .normal
         level = newLevel
         borderWindow?.level = newLevel  // Keep border window at same level
         Log.debug("Always on top: \(enabled ? "enabled" : "disabled") (level: \(newLevel.rawValue))")

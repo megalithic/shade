@@ -194,5 +194,12 @@ let package = Package(
             ],
             path: "Tests/ShadeCoreTests"
         ),
+        // Tests for ShadePanel behavior (window levels, always on top)
+        // Note: These tests use NSPanel directly without GhosttyKit dependencies
+        .testTarget(
+            name: "ShadePanelTests",
+            dependencies: [],
+            path: "Tests/ShadePanelTests"
+        ),
     ]
 )

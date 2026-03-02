@@ -476,18 +476,11 @@ class ShadeAppDelegate: NSObject, NSApplicationDelegate {
     }
 
     @objc private func handleToggleNotification(_ notification: Notification) {
-        Log.debug("IPC: toggle (visible=\(isPanelVisible), focused=\(isShadeFocused))")
+        Log.debug("IPC: toggle (visible=\(isPanelVisible))")
 
         if isPanelVisible {
-            if isShadeFocused {
-                // Visible and focused → hide
-                hidePanel()
-            } else {
-                // Visible but not focused → focus (bring to front)
-                Log.debug("Focusing panel (was visible but not focused)")
-                panel?.makeKeyAndOrderFront(nil)
-                NSApp.activate(ignoringOtherApps: true)
-            }
+            // Visible → hide
+            hidePanel()
         } else {
             // Hidden → show and focus
             // Reset to floating mode when showing from hidden state
@@ -1421,12 +1414,6 @@ class ShadeAppDelegate: NSObject, NSApplicationDelegate {
 
     /// Check if Shade panel is focused (has keyboard input)
     /// This checks both that the panel is the key window AND that the terminal is first responder
-    var isShadeFocused: Bool {
-        guard let panel = panel, panel.isKeyWindow else { return false }
-        // Verify terminal view is actually receiving input
-        return panel.firstResponder === terminalView
-    }
-
     /// Capture the frontmost app for later focus restoration
     /// Call this BEFORE any async work or showing the panel
     /// Returns the captured app (also stored in previousFocusedApp)

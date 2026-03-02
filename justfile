@@ -218,6 +218,20 @@ format:
 lint:
     swift-format lint -r Sources/
 
+# Run all tests (requires xcodebuild)
+test:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    export DEVELOPER_DIR="{{xcode_dev_dir}}"
+    xcodebuild test -scheme shade-Package -destination 'platform=macOS' 2>&1 | tail -30
+
+# Run specific test target
+test-target target:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    export DEVELOPER_DIR="{{xcode_dev_dir}}"
+    xcodebuild test -scheme shade-Package -only-testing:{{target}} -destination 'platform=macOS' 2>&1 | tail -30
+
 # ─────────────────────────────────────────────────────────────
 # GhosttyKit Dependency
 # ─────────────────────────────────────────────────────────────
