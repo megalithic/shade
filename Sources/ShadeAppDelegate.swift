@@ -198,6 +198,12 @@ class ShadeAppDelegate: NSObject, NSApplicationDelegate {
                 NSApp.terminate(nil)
             }
 
+            manager.onToggleAlwaysOnTop = { [weak self] in
+                guard let self = self, let panel = self.panel else { return }
+                panel.toggleAlwaysOnTop()
+                manager.setAlwaysOnTop(panel.alwaysOnTop)
+            }
+
             manager.setup()
 
             // Wire up MLX callbacks to menu bar

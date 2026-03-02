@@ -53,6 +53,9 @@ class ShadePanel: NSPanel {
     /// Opacity when unfocused (nil = no dimming, 1.0 = no dim, 0.5 = 50% opacity)
     var dimUnfocusedOpacity: Double?
 
+    /// Whether "always on top" is enabled (uses screenSaver level instead of floating)
+    private(set) var alwaysOnTop: Bool = false
+
     /// The border layer for focus indication
     private var borderLayer: CALayer?
 
@@ -203,6 +206,24 @@ class ShadePanel: NSPanel {
     // Don't become main window
     override var canBecomeMain: Bool {
         return false
+    }
+
+    // MARK: - Always On Top
+
+    /// Toggle "always on top" mode
+    /// When enabled, uses screenSaver level to stay above all other windows including fullscreen apps
+    /// When disabled, uses normal floating level
+    func toggleAlwaysOnTop() {
+        setAlwaysOnTop(!alwaysOnTop)
+    }
+
+    /// Set "always on top" mode explicitly
+    func setAlwaysOnTop(_ enabled: Bool) {
+        alwaysOnTop = enabled
+        let newLevel: NSWindow.Level = enabled ? .screenSaver : .floating
+        level = newLevel
+        borderWindow?.level = newLevel  // Keep border window at same level
+        Log.debug("Always on top: \(enabled ? "enabled" : "disabled") (level: \(newLevel.rawValue))")
     }
 
     // MARK: - Toggle Visibility

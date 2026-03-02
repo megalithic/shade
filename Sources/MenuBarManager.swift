@@ -140,6 +140,9 @@ final class MenuBarManager {
     private var modelStatusMenuItem: NSMenuItem?
     private var enrichmentStatusMenuItem: NSMenuItem?
 
+    /// Menu item for always on top toggle (for checkmark state)
+    private var alwaysOnTopMenuItem: NSMenuItem?
+
     /// Current model state
     private(set) var modelState: ModelState = .idle {
         didSet {
@@ -165,6 +168,12 @@ final class MenuBarManager {
 
     /// Callback for quit action
     var onQuit: (() -> Void)?
+
+    /// Callback for always on top toggle
+    var onToggleAlwaysOnTop: (() -> Void)?
+
+    /// Current "always on top" state (for checkmark)
+    private(set) var isAlwaysOnTop: Bool = false
 
     // MARK: - Initialization
     
@@ -232,6 +241,15 @@ final class MenuBarManager {
         let captureItem = NSMenuItem(title: "New Capture", action: #selector(handleNewCapture), keyEquivalent: "")
         captureItem.target = self
         menu.addItem(captureItem)
+
+        menu.addItem(NSMenuItem.separator())
+
+        // Window behavior
+        let alwaysOnTopItem = NSMenuItem(title: "Always on Top", action: #selector(handleToggleAlwaysOnTop), keyEquivalent: "")
+        alwaysOnTopItem.target = self
+        alwaysOnTopItem.state = isAlwaysOnTop ? .on : .off
+        menu.addItem(alwaysOnTopItem)
+        self.alwaysOnTopMenuItem = alwaysOnTopItem
 
         menu.addItem(NSMenuItem.separator())
 
@@ -415,6 +433,10 @@ final class MenuBarManager {
         onQuit?()
     }
 
+    @objc private func handleToggleAlwaysOnTop() {
+        onToggleAlwaysOnTop?()
+    }
+
     @objc private func handleShowLogs() {
         // Open Console.app with a predicate to filter for Shade's subsystem
         // The predicate filters for process name "shade" or subsystem "io.shade"
@@ -466,5 +488,14 @@ final class MenuBarManager {
             enrichmentStatusMenuItem?.isHidden = true
         }
         Log.debug("MenuBarManager: Pending enrichments = \(pendingEnrichments)")
+    }
+
+    // MARK: - Always on Top
+
+    /// Update "always on top" state (updates checkmark in menu)
+    func setAlwaysOnTop(_ enabled: Bool) {
+        isAlwaysOnTop = enabled
+        alwaysOnTopMenuItem?.state = enabled ? .on : .off
+        Log.debug("MenuBarManager: Always on top = \(enabled)")
     }
 }

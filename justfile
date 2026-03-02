@@ -10,17 +10,30 @@ version := "0.2.0"
 install_dir := env_var_or_default("PREFIX", env_var("HOME") + "/.local") + "/bin"
 ghostty_src := env_var_or_default("GHOSTTY_SRC", env_var("HOME") + "/src/ghostty")
 
+# Xcode path (prefer Xcode.app over CommandLineTools for Metal support)
+xcode_dev_dir := "/Applications/Xcode.app/Contents/Developer"
+
 # Default recipe: build debug
 default: build
+
+# Setup all dependencies (GhosttyKit check + Xcode/Metal Toolchain)
+setup:
+    @echo "Setting up shade build environment..."
+    @echo ""
+    @just check-deps || { echo ""; echo "Run 'just setup-ghostty' to build GhosttyKit"; exit 1; }
+    @echo ""
+    @just setup-xcode
+    @echo ""
+    @echo "Ready to build! Run 'just build' or 'just install'"
 
 # ─────────────────────────────────────────────────────────────
 # Development
 # ─────────────────────────────────────────────────────────────
 
-# Build debug binary (includes MLX metallib compilation)
+# Build debug binary (auto-installs Metal Toolchain if needed for MLX)
 build:
     swift build
-    @just install-metal-debug 2>/dev/null || echo "Note: MLX metallib not compiled (run 'just install-metal-debug' manually if MLX fails)"
+    @just install-metal-debug 2>/dev/null || echo "Note: MLX metallib not compiled (run 'just setup-xcode' if MLX features needed)"
 
 # Build and run (debug)
 run *ARGS: build
@@ -209,6 +222,12 @@ lint:
 # GhosttyKit Dependency
 # ─────────────────────────────────────────────────────────────
 
+# Check all build dependencies (GhosttyKit, Xcode, Metal Toolchain)
+check-all-deps:
+    @just check-deps
+    @echo ""
+    @just check-xcode
+
 # Check if GhosttyKit is available (searches standard locations)
 check-deps:
     #!/usr/bin/env bash
@@ -377,6 +396,173 @@ vendor-ghostty:
     echo "Consider adding vendor/ to .gitignore unless you need portable builds."
 
 # ─────────────────────────────────────────────────────────────
+# Xcode & Metal Toolchain
+# ─────────────────────────────────────────────────────────────
+# MLX requires Metal shaders compiled with the Metal Toolchain.
+# SwiftPM can't compile Metal shaders, so we do it manually.
+# The Metal Toolchain is a separate download from Xcode.
+
+# Check if Xcode and Metal Toolchain are properly configured
+check-xcode:
+    #!/usr/bin/env bash
+    set -euo pipefail
+
+    echo "Checking Xcode configuration..."
+    echo ""
+
+    # Check for Xcode.app
+    if [[ ! -d "{{xcode_dev_dir}}" ]]; then
+        echo "✗ Xcode.app not found at /Applications/Xcode.app"
+        echo "  Install Xcode from the App Store or:"
+        echo "    xcode-select --install  # (CommandLineTools only, no Metal)"
+        exit 1
+    fi
+    echo "✓ Xcode.app found"
+
+    # Check xcode-select path
+    CURRENT_DEV_DIR=$(xcode-select -p 2>/dev/null || echo "")
+    if [[ "$CURRENT_DEV_DIR" != "{{xcode_dev_dir}}" ]]; then
+        echo "⚠ xcode-select points to: $CURRENT_DEV_DIR"
+        echo "  Metal compilation requires Xcode.app. To fix:"
+        echo "    sudo xcode-select -s {{xcode_dev_dir}}"
+        echo "  (shade will use DEVELOPER_DIR override for now)"
+    else
+        echo "✓ xcode-select configured correctly"
+    fi
+
+    # Check first launch
+    export DEVELOPER_DIR="{{xcode_dev_dir}}"
+    if ! xcodebuild -checkFirstLaunchStatus &>/dev/null; then
+        echo "⚠ Xcode first launch not completed"
+        echo "  Run: just setup-xcode"
+    else
+        echo "✓ Xcode first launch completed"
+    fi
+
+    # Check Metal Toolchain
+    METAL_STATUS=$(xcodebuild -showComponent MetalToolchain 2>/dev/null | grep "Status:" | awk '{print $2}' || echo "unknown")
+    if [[ "$METAL_STATUS" == "installed" ]]; then
+        echo "✓ Metal Toolchain installed"
+    else
+        echo "✗ Metal Toolchain not installed (status: $METAL_STATUS)"
+        echo "  Run: just setup-xcode"
+        exit 1
+    fi
+
+    # Verify metal compiler works
+    if xcrun -sdk macosx metal --version &>/dev/null; then
+        METAL_VERSION=$(xcrun -sdk macosx metal --version 2>&1 | head -1)
+        echo "✓ Metal compiler: $METAL_VERSION"
+    else
+        echo "✗ Metal compiler not working"
+        exit 1
+    fi
+
+    echo ""
+    echo "All Xcode dependencies satisfied!"
+
+# Setup Xcode for Metal compilation (runs first launch, installs Metal Toolchain)
+setup-xcode:
+    #!/usr/bin/env bash
+    set -euo pipefail
+
+    echo "Setting up Xcode for Metal compilation..."
+    echo ""
+
+    # Check for Xcode.app
+    if [[ ! -d "{{xcode_dev_dir}}" ]]; then
+        echo "✗ Xcode.app not found at /Applications/Xcode.app"
+        echo ""
+        echo "Xcode is required for Metal shader compilation."
+        echo "Install from: https://developer.apple.com/xcode/"
+        echo "Or from the App Store."
+        exit 1
+    fi
+
+    export DEVELOPER_DIR="{{xcode_dev_dir}}"
+
+    # Run first launch setup (installs system components, accepts license)
+    echo "Running Xcode first launch setup..."
+    if ! xcodebuild -checkFirstLaunchStatus &>/dev/null; then
+        echo "  Installing Xcode system components..."
+        xcodebuild -runFirstLaunch
+        echo "  ✓ First launch completed"
+    else
+        echo "  ✓ Already completed"
+    fi
+
+    # Check and install Metal Toolchain
+    echo ""
+    echo "Checking Metal Toolchain..."
+    METAL_STATUS=$(xcodebuild -showComponent MetalToolchain 2>/dev/null | grep "Status:" | awk '{print $2}' || echo "unknown")
+
+    if [[ "$METAL_STATUS" == "installed" ]]; then
+        echo "  ✓ Metal Toolchain already installed"
+    else
+        echo "  Downloading Metal Toolchain (~700MB)..."
+        xcodebuild -downloadComponent MetalToolchain
+        echo "  ✓ Metal Toolchain installed"
+    fi
+
+    # Verify metal compiler
+    echo ""
+    echo "Verifying Metal compiler..."
+    if xcrun -sdk macosx metal --version &>/dev/null; then
+        METAL_VERSION=$(xcrun -sdk macosx metal --version 2>&1 | head -1)
+        echo "  ✓ $METAL_VERSION"
+    else
+        echo "  ✗ Metal compiler verification failed"
+        exit 1
+    fi
+
+    echo ""
+    echo "═══════════════════════════════════════════════════"
+    echo "  Xcode setup complete!"
+    echo "═══════════════════════════════════════════════════"
+    echo ""
+    echo "You can now build shade with MLX support:"
+    echo "  just build"
+
+# Ensure Metal Toolchain is available (called by build recipes)
+[private]
+ensure-metal:
+    #!/usr/bin/env bash
+    # Quick check if metal works, setup if not
+    export DEVELOPER_DIR="{{xcode_dev_dir}}"
+
+    if xcrun -sdk macosx metal --version &>/dev/null; then
+        exit 0
+    fi
+
+    # Metal not working - check if Xcode exists
+    if [[ ! -d "{{xcode_dev_dir}}" ]]; then
+        echo "⚠ Xcode.app not found - MLX features will be disabled"
+        echo "  Install Xcode for Metal shader compilation"
+        exit 1
+    fi
+
+    # Try first launch
+    if ! xcodebuild -checkFirstLaunchStatus &>/dev/null; then
+        echo "Running Xcode first launch setup..."
+        xcodebuild -runFirstLaunch || {
+            echo "⚠ Xcode first launch failed - MLX features will be disabled"
+            exit 1
+        }
+    fi
+
+    # Check Metal Toolchain status
+    METAL_STATUS=$(xcodebuild -showComponent MetalToolchain 2>/dev/null | grep "Status:" | awk '{print $2}' || echo "unknown")
+
+    if [[ "$METAL_STATUS" != "installed" ]]; then
+        echo "Metal Toolchain not installed. Installing (~700MB)..."
+        xcodebuild -downloadComponent MetalToolchain || {
+            echo "⚠ Metal Toolchain download failed - MLX features will be disabled"
+            exit 1
+        }
+        echo "✓ Metal Toolchain installed"
+    fi
+
+# ─────────────────────────────────────────────────────────────
 # Debugging
 # ─────────────────────────────────────────────────────────────
 
@@ -404,14 +590,23 @@ xcode:
 # This compiles .metal files into a metallib that MLX can load at runtime.
 
 # Compile MLX Metal shaders (required for MLX to work at runtime)
-compile-metal:
+compile-metal: ensure-metal
     #!/usr/bin/env bash
     set -euo pipefail
+
+    export DEVELOPER_DIR="{{xcode_dev_dir}}"
 
     METAL_SRC=".build/checkouts/mlx-swift/Source/Cmlx/mlx-generated/metal"
 
     if [[ ! -d "$METAL_SRC" ]]; then
         echo "Metal shaders not found. Run 'swift build' first to fetch dependencies."
+        exit 1
+    fi
+
+    # Double-check metal compiler works (ensure-metal should have set it up)
+    if ! xcrun -sdk macosx metal --version &>/dev/null; then
+        echo "✗ Metal compiler not available after setup."
+        echo "  Run 'just setup-xcode' to diagnose."
         exit 1
     fi
 
@@ -421,14 +616,23 @@ compile-metal:
     # Clean previous builds
     rm -f /tmp/mlx_*.air /tmp/mlx.metallib 2>/dev/null || true
 
+    # Track compilation success
+    compiled=0
+    failed=0
+
     # Compile all .metal files (including subdirectories)
-    find . -name "*.metal" -print0 | while IFS= read -r -d '' f; do
+    while IFS= read -r -d '' f; do
         safename=$(echo "$f" | sed 's|^\./||; s|/|_|g; s|\.metal$||')
         echo "  Compiling: $f"
-        xcrun -sdk macosx metal -c "$f" -I. -o "/tmp/mlx_${safename}.air" 2>/dev/null || {
+        if xcrun -sdk macosx metal -c "$f" -I. -o "/tmp/mlx_${safename}.air" 2>&1; then
+            ((compiled++)) || true
+        else
             echo "  Warning: Failed to compile $f"
-        }
-    done
+            ((failed++)) || true
+        fi
+    done < <(find . -name "*.metal" -print0)
+
+    echo "  Compiled: $compiled, Failed: $failed"
 
     # Link into metallib
     if ls /tmp/mlx_*.air 1>/dev/null 2>&1; then
