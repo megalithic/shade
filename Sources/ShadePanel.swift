@@ -230,12 +230,18 @@ class ShadePanel: NSPanel {
 
     // MARK: - Toggle Visibility
 
+    /// Smart toggle: hide if Shade is focused, otherwise focus/activate
     func toggle() {
-        Log.debug("Toggle called, isVisible=\(isVisible)")
-        if isVisible {
+        let isFocused = NSApp.isActive && isKeyWindow
+        Log.debug("Toggle called, isVisible=\(isVisible), isFocused=\(isFocused)")
+        
+        if isFocused {
+            // Shade is focused → hide it
             hide()
         } else {
+            // Shade not focused → show and focus
             show()
+            makeKey()
         }
     }
 

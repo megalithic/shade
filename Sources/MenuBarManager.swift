@@ -79,13 +79,34 @@ final class MenuBarManager {
         return "unknown"
     }()
 
-    /// Formatted version string for display
+    /// Build datetime (modification time of the executable) in yyyyMMdd_HHmm format
+    private static let buildDateTime: String = {
+        guard let execPath = Bundle.main.executablePath else { return "unknown" }
+        do {
+            let attrs = try FileManager.default.attributesOfItem(atPath: execPath)
+            if let modDate = attrs[.modificationDate] as? Date {
+                let formatter = DateFormatter()
+                formatter.dateFormat = "yyyyMMdd_HHmm"
+                return formatter.string(from: modDate)
+            }
+        } catch {}
+        return "unknown"
+    }()
+
+    /// Formatted version string for display: {version} / {yyyyMMdd_HHmm}
     private static let versionString: String = {
+        let version: String
         if let prefix = buildPrefix {
-            return "\(prefix)-\(gitSHA)"
+            version = "\(prefix)-\(gitSHA)"
         } else {
-            return gitSHA
+            version = gitSHA
         }
+        return "\(version) / \(buildDateTime)"
+    }()
+
+    /// Path to the running binary
+    private static let binaryPath: String = {
+        Bundle.main.executablePath ?? "unknown"
     }()
 
     /// Get the focused stroke color from config, or use default
@@ -280,10 +301,15 @@ final class MenuBarManager {
 
         menu.addItem(NSMenuItem.separator())
 
-        // Version info (build context + git SHA from HEAD)
+        // Version info: {version} / {yyyyMMdd_HHmm}
         let versionItem = NSMenuItem(title: Self.versionString, action: nil, keyEquivalent: "")
         versionItem.isEnabled = false
         menu.addItem(versionItem)
+
+        // Binary path
+        let pathItem = NSMenuItem(title: Self.binaryPath, action: nil, keyEquivalent: "")
+        pathItem.isEnabled = false
+        menu.addItem(pathItem)
 
         // Quit
         let quitItem = NSMenuItem(title: "Quit Shade", action: #selector(handleQuit), keyEquivalent: "q")

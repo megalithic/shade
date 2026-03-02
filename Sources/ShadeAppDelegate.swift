@@ -476,12 +476,13 @@ class ShadeAppDelegate: NSObject, NSApplicationDelegate {
     }
 
     @objc private func handleToggleNotification(_ notification: Notification) {
-        Log.debug("IPC: toggle (visible=\(isPanelVisible))")
+        let isFocused = NSApp.isActive && (panel?.isKeyWindow ?? false)
+        Log.debug("IPC: toggle (visible=\(isPanelVisible), focused=\(isFocused))")
 
-        if isPanelVisible {
-            // Visible → hide
+        if isFocused {
+            // Visible and focused → hide
             hidePanel()
-        } else {
+        } else if !isPanelVisible {
             // Hidden → show and focus
             // Reset to floating mode when showing from hidden state
             // Sidebar mode is only valid when actively set via io.shade.mode.sidebar-*
@@ -505,6 +506,11 @@ class ShadeAppDelegate: NSObject, NSApplicationDelegate {
                     }
                 }
             }
+        } else {
+            // Visible but not focused → just focus it
+            Log.debug("Panel visible but not focused, focusing")
+            panel?.makeKeyAndOrderFront(nil)
+            NSApp.activate(ignoringOtherApps: true)
         }
     }
 
