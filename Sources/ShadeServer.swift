@@ -2,6 +2,7 @@ import Foundation
 @preconcurrency import MessagePack
 import MsgpackRpc
 import ContextGatherer
+import ShadeCore
 
 /// RPC server that allows nvim (and other clients) to send commands to Shade.
 /// Listens on ~/.local/state/shade/shade.sock
@@ -142,6 +143,88 @@ actor ShadeServer {
         // ping() - Simple connectivity test
         handlers["ping"] = { _ in
             return .string("pong")
+        }
+
+        // open_daily_note() - Open today's daily note via nvim RPC
+        // Calls `Obsidian today` command in nvim
+        // Returns: { path: string } or { error: string }
+        handlers["open_daily_note"] = { [weak self] _ in
+            guard let self = self else {
+                return .map([.string("error"): .string("ShadeServer not available")])
+            }
+
+            // Use ShadeNvim to execute the Obsidian today command
+            let nvim = ShadeNvim.shared
+            
+            // Connect and perform the operation
+            var resultPath: String?
+            var errorStr: String?
+            
+            await nvim.connectAndPerform(
+                { nvim in try await nvim.openDailyNote() },
+                onSuccess: { path in resultPath = path },
+                onError: { error in errorStr = error }
+            )
+
+            // Wait a bit for the async operation to complete
+            try? await Task.sleep(nanoseconds: 500_000_000) // 500ms
+            
+            if let path = resultPath {
+                return .map([.string("path"): .string(path)])
+            } else if let error = errorStr {
+                return .map([.string("error"): .string(error)])
+            } else {
+                return .map([.string("error"): .string("Operation pending or failed")])
+            }
+        }
+
+        // open_new_capture() - Open a new capture note via nvim RPC
+        // Uses obsidian.nvim template with context.json
+        // Returns: { path: string } or { error: string }
+        handlers["open_new_capture"] = { [weak self] _ in
+            guard let self = self else {
+                return .map([.string("error"): .string("ShadeServer not available")])
+            }
+
+            let nvim = ShadeNvim.shared
+            
+            // Read context from file (written by Hammerspoon or ContextGatherer)
+            let context: CaptureContext?
+            if let ctxDict = StateDirectory.readContext() {
+                context = CaptureContext(
+                    appType: ctxDict.appType,
+                    appName: ctxDict.appName,
+                    windowTitle: ctxDict.windowTitle,
+                    url: ctxDict.url,
+                    filePath: ctxDict.filePath,
+                    selection: ctxDict.selection,
+                    detectedLanguage: ctxDict.detectedLanguage,
+                    timestamp: ctxDict.timestamp,
+                    imageFilename: ctxDict.imageFilename
+                )
+            } else {
+                context = nil
+            }
+
+            var resultPath: String?
+            var errorStr: String?
+            
+            await nvim.connectAndPerform(
+                { nvim in try await nvim.openNewCapture(context: context) },
+                onSuccess: { path in resultPath = path },
+                onError: { error in errorStr = error }
+            )
+
+            // Wait for async operation
+            try? await Task.sleep(nanoseconds: 500_000_000)
+            
+            if let path = resultPath {
+                return .map([.string("path"): .string(path)])
+            } else if let error = errorStr {
+                return .map([.string("error"): .string(error)])
+            } else {
+                return .map([.string("error"): .string("Operation pending or failed")])
+            }
         }
 
         // MARK: - MLX LLM Methods

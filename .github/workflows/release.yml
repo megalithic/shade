@@ -1,0 +1,299 @@
+# Release workflow for Shade
+# Builds GhosttyKit from source, then builds Shade, creates release artifacts
+#
+# Triggered by:
+#   - Pushing a tag like v0.2.0
+#   - Manual workflow_dispatch with version input
+#
+# Outputs:
+#   - shade-darwin-arm64.tar.gz (binary + metallib)
+#   - shade-darwin-arm64.tar.gz.sha256
+#   - shade-darwin-x86_64.tar.gz (binary + metallib)
+#   - shade-darwin-x86_64.tar.gz.sha256
+
+name: Release
+
+on:
+  push:
+    tags:
+      - "v[0-9]+.[0-9]+.[0-9]+*"
+
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Version (e.g., 0.2.0)"
+        required: true
+      create_release:
+        description: "Create GitHub release"
+        type: boolean
+        default: true
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  # Ghostty commit/tag to build GhosttyKit from
+  # Update this when you want to use a newer Ghostty version
+  GHOSTTY_REF: "v1.3.1"
+  # Zig version required by Ghostty (check build.zig.zon)
+  ZIG_VERSION: "0.15.2"
+
+jobs:
+  setup:
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+      tag: ${{ steps.version.outputs.tag }}
+    steps:
+      - name: Extract version
+        id: version
+        run: |
+          if [[ "${{ github.event_name }}" == "workflow_dispatch" ]]; then
+            VERSION="${{ github.event.inputs.version }}"
+          else
+            # Extract from tag (remove leading 'v')
+            VERSION="${GITHUB_REF#refs/tags/v}"
+          fi
+          echo "version=$VERSION" >> $GITHUB_OUTPUT
+          echo "tag=v$VERSION" >> $GITHUB_OUTPUT
+          echo "Version: $VERSION"
+
+  build:
+    needs: setup
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: macos-26        # Apple Silicon (M1/M2/M3) - Xcode 26
+            arch: arm64
+            zig_target: aarch64-macos
+          - os: macos-13        # Intel - older Xcode but OK for x86_64
+            arch: x86_64
+            zig_target: x86_64-macos
+
+    runs-on: ${{ matrix.os }}
+    env:
+      SHADE_VERSION: ${{ needs.setup.outputs.version }}
+
+    steps:
+      - name: Checkout Shade
+        uses: actions/checkout@v5
+
+      - name: Checkout Ghostty
+        uses: actions/checkout@v5
+        with:
+          repository: ghostty-org/ghostty
+          ref: ${{ env.GHOSTTY_REF }}
+          path: ghostty
+
+      - name: Setup Zig
+        uses: mlugg/setup-zig@v2
+        with:
+          version: ${{ env.ZIG_VERSION }}
+
+      - name: Verify Zig
+        run: |
+          zig version
+          which zig
+
+      - name: Cache Zig build
+        uses: actions/cache@v4
+        with:
+          path: |
+            ghostty/zig-cache
+            ghostty/.zig-cache
+          key: zig-${{ matrix.arch }}-${{ env.GHOSTTY_REF }}-${{ env.ZIG_VERSION }}
+
+      - name: Build GhosttyKit
+        working-directory: ghostty
+        run: |
+          echo "Building GhosttyKit for ${{ matrix.arch }}..."
+
+          # Build libghostty (produces xcframework)
+          # -Demit-macos-app=false skips the full app, just builds the library
+          # -Dxcframework-target=native builds only for current arch (faster)
+          zig build \
+            -Doptimize=ReleaseFast \
+            -Demit-macos-app=false \
+            -Dxcframework-target=native
+
+          echo ""
+          echo "Checking output..."
+          ls -la macos/GhosttyKit.xcframework/ || true
+
+          # Find the architecture-specific directory
+          XCFW_DIR=""
+          if [[ -d "macos/GhosttyKit.xcframework/macos-arm64" ]]; then
+            XCFW_DIR="macos/GhosttyKit.xcframework/macos-arm64"
+          elif [[ -d "macos/GhosttyKit.xcframework/macos-x86_64" ]]; then
+            XCFW_DIR="macos/GhosttyKit.xcframework/macos-x86_64"
+          elif [[ -d "macos/GhosttyKit.xcframework/macos-arm64_x86_64" ]]; then
+            XCFW_DIR="macos/GhosttyKit.xcframework/macos-arm64_x86_64"
+          else
+            echo "ERROR: Could not find GhosttyKit output directory"
+            find macos -name "*.a" -o -name "libghostty*" 2>/dev/null || true
+            exit 1
+          fi
+
+          echo "Found GhosttyKit at: $XCFW_DIR"
+          ls -la "$XCFW_DIR/"
+
+          # Verify the library exists
+          if [[ ! -f "$XCFW_DIR/libghostty-fat.a" ]]; then
+            echo "ERROR: libghostty-fat.a not found"
+            exit 1
+          fi
+
+          # Export for next steps
+          echo "GHOSTTYKIT_PATH=$PWD/$XCFW_DIR" >> $GITHUB_ENV
+
+      - name: Verify GhosttyKit
+        run: |
+          echo "GhosttyKit path: $GHOSTTYKIT_PATH"
+          ls -la "$GHOSTTYKIT_PATH/"
+          file "$GHOSTTYKIT_PATH/libghostty-fat.a"
+
+      - name: Verify Xcode (arm64 only)
+        if: matrix.arch == 'arm64'
+        run: |
+          xcodebuild -version
+          xcrun --show-sdk-version
+
+      - name: Build Shade
+        run: |
+          echo "Building Shade v$SHADE_VERSION..."
+          swift build -c release
+
+          # Verify binary
+          .build/release/shade --version || true
+          file .build/release/shade
+
+      - name: Compile Metal shaders (MLX)
+        continue-on-error: true  # MLX metallib is optional
+        run: |
+          echo "Compiling MLX Metal shaders..."
+
+          METAL_SRC=".build/checkouts/mlx-swift/Source/Cmlx/mlx-generated/metal"
+          if [[ ! -d "$METAL_SRC" ]]; then
+            echo "Metal shaders not found, skipping..."
+            exit 0
+          fi
+
+          cd "$METAL_SRC"
+
+          # Compile all .metal files
+          for f in $(find . -name "*.metal"); do
+            safename=$(echo "$f" | sed 's|^\./||; s|/|_|g; s|\.metal$||')
+            xcrun -sdk macosx metal -c "$f" -I. -o "/tmp/mlx_${safename}.air" 2>/dev/null || true
+          done
+
+          # Link into metallib
+          if ls /tmp/mlx_*.air 1>/dev/null 2>&1; then
+            xcrun -sdk macosx metallib /tmp/mlx_*.air -o /tmp/mlx.metallib
+            cp /tmp/mlx.metallib $GITHUB_WORKSPACE/.build/release/mlx.metallib
+            echo "✓ Created mlx.metallib"
+          fi
+
+      - name: Create release tarball
+        run: |
+          TARBALL="shade-darwin-${{ matrix.arch }}.tar.gz"
+
+          mkdir -p release-staging
+          cp .build/release/shade release-staging/
+
+          # Include metallib if present
+          if [[ -f .build/release/mlx.metallib ]]; then
+            cp .build/release/mlx.metallib release-staging/
+          fi
+
+          # Create tarball
+          cd release-staging
+          tar -czvf "../$TARBALL" .
+          cd ..
+
+          # Generate SHA256
+          shasum -a 256 "$TARBALL" > "${TARBALL}.sha256"
+
+          echo "Created: $TARBALL"
+          cat "${TARBALL}.sha256"
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: shade-darwin-${{ matrix.arch }}
+          path: |
+            shade-darwin-${{ matrix.arch }}.tar.gz
+            shade-darwin-${{ matrix.arch }}.tar.gz.sha256
+
+  release:
+    needs: [setup, build]
+    if: |
+      github.event_name == 'push' ||
+      (github.event_name == 'workflow_dispatch' && github.event.inputs.create_release == 'true')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+
+      - name: Prepare release files
+        run: |
+          mkdir -p release
+          find artifacts -type f \( -name "*.tar.gz" -o -name "*.sha256" \) -exec cp {} release/ \;
+          ls -la release/
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ needs.setup.outputs.tag }}
+          name: Shade ${{ needs.setup.outputs.version }}
+          draft: false
+          prerelease: ${{ contains(needs.setup.outputs.version, '-') }}
+          generate_release_notes: true
+          files: |
+            release/*
+          body: |
+            ## Shade ${{ needs.setup.outputs.version }}
+
+            A floating terminal panel for macOS powered by libghostty.
+
+            ### Downloads
+
+            | Platform | Architecture | File |
+            |----------|--------------|------|
+            | macOS | Apple Silicon (M1/M2/M3) | `shade-darwin-arm64.tar.gz` |
+            | macOS | Intel | `shade-darwin-x86_64.tar.gz` |
+
+            ### Installation
+
+            ```bash
+            # Download and extract (Apple Silicon)
+            curl -L https://github.com/${{ github.repository }}/releases/download/${{ needs.setup.outputs.tag }}/shade-darwin-arm64.tar.gz | tar xz
+
+            # Move to PATH
+            mv shade ~/.local/bin/
+            ```
+
+            ### Nix/Home-Manager
+
+            Use `fetchurl` with the SHA256 from the `.sha256` file:
+
+            ```nix
+            stdenv.mkDerivation {
+              pname = "shade";
+              version = "${{ needs.setup.outputs.version }}";
+              src = fetchurl {
+                url = "https://github.com/${{ github.repository }}/releases/download/${{ needs.setup.outputs.tag }}/shade-darwin-arm64.tar.gz";
+                sha256 = "...";  # See .sha256 file
+              };
+              # ...
+            }
+            ```
+
+            ### GhosttyKit Version
+
+            Built with GhosttyKit from Ghostty `${{ env.GHOSTTY_REF }}`.
