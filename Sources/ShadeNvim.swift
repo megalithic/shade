@@ -279,7 +279,7 @@ actor ShadeNvim {
     
     // MARK: - Note Operations
     
-    /// Open today's daily note using ObsidianToday command
+    /// Open today's daily note using `Obsidian today` command (new obsidian.nvim syntax)
     ///
     /// - Returns: Path to the daily note (computed, not from nvim)
     /// - Throws: ShadeNvimError if not connected or command fails
@@ -301,14 +301,14 @@ actor ShadeNvim {
         let dateStr = formatter.string(from: Date())
         let filepath = "\(baseDir)/daily/\(year)/\(dateStr).md"
         
-        // Execute ObsidianToday command
+        // Execute Obsidian today command (new syntax, legacy_commands=false)
         do {
-            try await api.command("ObsidianToday")
+            try await api.command("Obsidian today")
             Log.info("ShadeNvim: Opened daily note at \(filepath)")
             return filepath
         } catch let error as NvimAPI.APIError {
-            // If ObsidianToday fails, fall back to direct file open
-            Log.warn("ShadeNvim: ObsidianToday failed, falling back to direct open: \(error)")
+            // If command fails, fall back to direct file open
+            Log.warn("ShadeNvim: Obsidian today failed, falling back to direct open: \(error)")
             try await api.command("edit \(escapeVimPath(filepath))")
             return filepath
         }

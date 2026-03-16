@@ -1,0 +1,106 @@
+# CI workflow for Shade
+# Builds GhosttyKit and Shade on PRs and pushes to main
+# This validates the build works before releasing
+
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  # Ghostty version to use for GhosttyKit
+  GHOSTTY_REF: "v1.3.1"
+  ZIG_VERSION: "0.15.2"
+
+jobs:
+  build:
+    runs-on: macos-26  # macOS 26 (Sequoia) with Xcode 26
+
+    steps:
+      - name: Checkout Shade
+        uses: actions/checkout@v5
+
+      - name: Checkout Ghostty
+        uses: actions/checkout@v5
+        with:
+          repository: ghostty-org/ghostty
+          ref: ${{ env.GHOSTTY_REF }}
+          path: ghostty
+
+      - name: Setup Zig
+        uses: mlugg/setup-zig@v2
+        with:
+          version: ${{ env.ZIG_VERSION }}
+
+      - name: Cache Zig build
+        uses: actions/cache@v4
+        with:
+          path: |
+            ghostty/zig-cache
+            ghostty/.zig-cache
+          key: zig-ci-${{ env.GHOSTTY_REF }}-${{ env.ZIG_VERSION }}
+
+      - name: Verify Xcode
+        run: |
+          xcodebuild -version
+          xcrun --show-sdk-version
+
+      - name: Build GhosttyKit
+        working-directory: ghostty
+        run: |
+          echo "Building GhosttyKit..."
+          zig build \
+            -Doptimize=ReleaseFast \
+            -Demit-macos-app=false \
+            -Dxcframework-target=native
+
+          # Find and export path
+          XCFW_DIR="macos/GhosttyKit.xcframework/macos-arm64"
+          if [[ ! -d "$XCFW_DIR" ]]; then
+            XCFW_DIR=$(find macos/GhosttyKit.xcframework -name "macos-*" -type d | head -1)
+          fi
+
+          echo "GHOSTTYKIT_PATH=$PWD/$XCFW_DIR" >> $GITHUB_ENV
+          ls -la "$XCFW_DIR/"
+
+      - name: Verify Xcode
+        run: |
+          xcodebuild -version
+          xcrun --show-sdk-version
+
+      - name: Build Shade (Debug)
+        run: |
+          swift build
+          .build/debug/shade --help
+
+      - name: Build Shade (Release)
+        run: |
+          swift build -c release
+          file .build/release/shade
+
+      - name: Run Tests
+        run: |
+          swift test
+
+  lint:
+    runs-on: macos-14
+
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Check Swift formatting
+        run: |
+          # Install swift-format if not present
+          if ! command -v swift-format &> /dev/null; then
+            brew install swift-format
+          fi
+
+          # Check formatting (non-blocking for now)
+          swift-format lint -r Sources/ || echo "::warning::Swift formatting issues found"

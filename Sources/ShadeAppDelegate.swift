@@ -74,6 +74,16 @@ class ShadeAppDelegate: NSObject, NSApplicationDelegate {
     /// Menubar status item manager
     private var menuBarManager: MenuBarManager?
 
+    // MARK: - Helpers
+
+    /// Check if an app is Shade (by bundle ID, name, or PID)
+    private func isShadeApp(_ app: NSRunningApplication?) -> Bool {
+        guard let app = app else { return false }
+        return app.bundleIdentifier == Bundle.main.bundleIdentifier ||
+               app.localizedName == "shade" ||
+               app.processIdentifier == ProcessInfo.processInfo.processIdentifier
+    }
+
     // MARK: - Initialization
 
     init(config: AppConfig) {
@@ -335,30 +345,16 @@ class ShadeAppDelegate: NSObject, NSApplicationDelegate {
             }
 
             // Track it if it's not Shade
-            // Check both bundle ID (for .app bundles) and process name (for bare executables in dev)
-            let isShade = app.bundleIdentifier == Bundle.main.bundleIdentifier ||
-                          app.localizedName == "shade" ||
-                          app.processIdentifier == ProcessInfo.processInfo.processIdentifier
-            if !isShade {
+            if !self.isShadeApp(app) {
                 self.lastNonShadeFrontApp = app
                 Log.debug("Tracked frontmost app: \(app.localizedName ?? "unknown") (\(app.bundleIdentifier ?? "?"))")
-
-                // Experimental: Dynamic companion tracking in sidebar mode
-                self.handlePotentialCompanionChange(app)
-            } else {
-                Log.debug("Skipping Shade from tracking (bundle: \(app.bundleIdentifier ?? "?"), our bundle: \(Bundle.main.bundleIdentifier ?? "?"))")
             }
         }
 
         // Initialize with current frontmost app (if not Shade)
-        if let frontApp = workspace.frontmostApplication {
-            let isShade = frontApp.bundleIdentifier == Bundle.main.bundleIdentifier ||
-                          frontApp.localizedName == "shade" ||
-                          frontApp.processIdentifier == ProcessInfo.processInfo.processIdentifier
-            if !isShade {
-                lastNonShadeFrontApp = frontApp
-                Log.debug("Initial frontmost app: \(frontApp.localizedName ?? "unknown")")
-            }
+        if let frontApp = workspace.frontmostApplication, !isShadeApp(frontApp) {
+            lastNonShadeFrontApp = frontApp
+            Log.debug("Initial frontmost app: \(frontApp.localizedName ?? "unknown")")
         }
 
         Log.debug("Workspace observer configured")
@@ -622,41 +618,6 @@ class ShadeAppDelegate: NSObject, NSApplicationDelegate {
 
     // MARK: - Sidebar Mode
 
-    /// Handle a potential companion change
-    /// Called when a non-Shade app becomes frontmost while in sidebar mode
-    /// NOTE: Dynamic companion switching has been disabled (was an experimental feature)
-    private func handlePotentialCompanionChange(_ app: NSRunningApplication) {
-        // Feature disabled - companion is only set when entering sidebar mode
-    }
-
-    /// Resize a companion app to fit alongside Shade in sidebar mode
-    /// Shade is always on the left, companion on the right
-    private func resizeCompanionForSidebar(app: NSRunningApplication) {
-        guard let screen = NSScreen.main ?? NSScreen.screens.first else { return }
-        let screenFrame = screen.visibleFrame
-
-        let sidebarWidth: CGFloat
-        if appConfig.sidebarWidth <= 1.0 {
-            sidebarWidth = screenFrame.width * CGFloat(appConfig.sidebarWidth)
-        } else {
-            sidebarWidth = CGFloat(appConfig.sidebarWidth)
-        }
-
-        // Shade on left, companion fills the right side
-        let companionFrame = CGRect(
-            x: screenFrame.origin.x + sidebarWidth,
-            y: screenFrame.origin.y,
-            width: screenFrame.width - sidebarWidth,
-            height: screenFrame.height
-        )
-
-        if setWindowFrame(for: app, frame: companionFrame) {
-            Log.debug("Resized new companion to: \(companionFrame.debugDescription)")
-        } else {
-            Log.warn("Failed to resize new companion")
-        }
-    }
-
     /// Enter sidebar mode - dock Shade panel to left edge and resize companion app
     /// Shade handles ALL window management directly (no Hammerspoon round-trip)
     /// Shade always docks to the left side of the screen.
@@ -882,41 +843,11 @@ class ShadeAppDelegate: NSObject, NSApplicationDelegate {
     /// Set the main window's frame for an application using Accessibility API
     @discardableResult
     private func setWindowFrame(for app: NSRunningApplication, frame: CGRect) -> Bool {
-        let appElement = AXUIElementCreateApplication(app.processIdentifier)
-
-        // Get the main or focused window
-        var window: AnyObject?
-        var result = AXUIElementCopyAttributeValue(appElement, kAXFocusedWindowAttribute as CFString, &window)
-        if result != .success {
-            result = AXUIElementCopyAttributeValue(appElement, kAXMainWindowAttribute as CFString, &window)
-        }
-
-        guard result == .success, let windowElement = window as! AXUIElement? else {
+        guard let windowElement = getFocusedWindowElement(for: app) else {
             Log.debug("Could not get window for \(app.localizedName ?? "app") to set frame")
             return false
         }
-
-        // Set position
-        var point = frame.origin
-        guard let positionValue = AXValueCreate(.cgPoint, &point) else {
-            return false
-        }
-        let posResult = AXUIElementSetAttributeValue(windowElement, kAXPositionAttribute as CFString, positionValue)
-        if posResult != .success {
-            Log.debug("Failed to set position: \(posResult.rawValue)")
-        }
-
-        // Set size
-        var size = frame.size
-        guard let sizeValue = AXValueCreate(.cgSize, &size) else {
-            return false
-        }
-        let sizeResult = AXUIElementSetAttributeValue(windowElement, kAXSizeAttribute as CFString, sizeValue)
-        if sizeResult != .success {
-            Log.debug("Failed to set size: \(sizeResult.rawValue)")
-        }
-
-        return posResult == .success && sizeResult == .success
+        return setWindowFrame(for: windowElement, frame: frame)
     }
 
     @objc private func handleNoteCaptureNotification(_ notification: Notification) {
@@ -1418,83 +1349,38 @@ class ShadeAppDelegate: NSObject, NSApplicationDelegate {
         return panel?.isVisible ?? false
     }
 
-    /// Check if Shade panel is focused (has keyboard input)
-    /// This checks both that the panel is the key window AND that the terminal is first responder
-    /// Capture the frontmost app for later focus restoration
-    /// Call this BEFORE any async work or showing the panel
-    /// Returns the captured app (also stored in previousFocusedApp)
-    ///
-    /// This function uses `lastNonShadeFrontApp` (tracked proactively via workspace notifications)
-    /// as a fallback, ensuring we always have a valid app for context gathering even if:
-    /// - The panel is already visible
-    /// - Shade has already become frontmost by the time this is called
-    ///
-    /// IMPORTANT: This function now distinguishes between two use cases:
-    /// 1. Focus restoration: uses previousFocusedApp (set when panel first becomes visible)
-    /// 2. Context gathering: uses lastNonShadeFrontApp (proactively tracked, always current)
-    ///
-    /// The return value is for CONTEXT GATHERING, which needs the most recent non-Shade app.
+    /// Capture the frontmost non-Shade app for context gathering and focus restoration.
+    /// Call BEFORE async work or showing the panel.
+    /// Returns lastNonShadeFrontApp (proactively tracked) or falls back to bootstrap context.
     @discardableResult
     private func capturePreviousFocusedApp() -> NSRunningApplication? {
-        // Diagnostic logging
-        Log.debug("capturePreviousFocusedApp: isPanelVisible=\(isPanelVisible)")
-        Log.debug("  lastNonShadeFrontApp: \(lastNonShadeFrontApp?.localizedName ?? "nil") (\(lastNonShadeFrontApp?.bundleIdentifier ?? "?"))")
-        Log.debug("  previousFocusedApp: \(previousFocusedApp?.localizedName ?? "nil") (\(previousFocusedApp?.bundleIdentifier ?? "?"))")
-        Log.debug("  frontmostApplication: \(NSWorkspace.shared.frontmostApplication?.localizedName ?? "nil")")
-
-        // For FOCUS RESTORATION: only update previousFocusedApp when panel becomes visible
-        // This captures where to return focus when hiding the panel
+        // Update previousFocusedApp for focus restoration (only when panel first shows)
         if !isPanelVisible {
             let frontApp = NSWorkspace.shared.frontmostApplication
-            // Don't save Shade itself as the previous app
-            // Check both bundle ID (for .app bundles) and process name/PID (for bare executables in dev)
-            let isShade = frontApp?.bundleIdentifier == Bundle.main.bundleIdentifier ||
-                          frontApp?.localizedName == "shade" ||
-                          frontApp?.processIdentifier == ProcessInfo.processInfo.processIdentifier
-            if !isShade {
+            if !isShadeApp(frontApp) {
                 previousFocusedApp = frontApp
-                Log.debug("Updated previousFocusedApp (for focus restoration): \(frontApp?.localizedName ?? "none")")
             } else if let tracked = lastNonShadeFrontApp {
-                // Shade is frontmost (timing issue) - use proactively tracked app
                 previousFocusedApp = tracked
-                Log.debug("Updated previousFocusedApp via tracking: \(tracked.localizedName ?? "none")")
             }
         }
 
-        // For CONTEXT GATHERING: always use lastNonShadeFrontApp (proactively tracked)
-        // This is the most recent non-Shade app, even if user switched apps while panel is visible
-        // Fallback to previousFocusedApp only if tracking hasn't captured anything yet
+        // Return tracked app for context gathering
         var result = lastNonShadeFrontApp ?? previousFocusedApp
 
-        // COLD START BOOTSTRAP: If we have no tracked app, check for bootstrap context
-        // This happens when Shade was just launched and became frontmost before
-        // the workspace observer could track any apps. Hammerspoon writes a bootstrap
-        // context file with the bundleID of the app that was frontmost when the
-        // capture was triggered.
-        if result == nil {
-            Log.debug("No tracked app - checking for bootstrap context")
-            if let bootstrapContext = StateDirectory.readGatheredContext(),
-               let bundleID = bootstrapContext.bundleID,
-               !bundleID.isEmpty {
-                Log.debug("Found bootstrap context with bundleID: \(bundleID)")
-                // Find the running app with this bundle ID
-                if let bootstrapApp = NSRunningApplication.runningApplications(withBundleIdentifier: bundleID).first {
-                    result = bootstrapApp
-                    // Also update tracking so subsequent calls work
-                    lastNonShadeFrontApp = bootstrapApp
-                    previousFocusedApp = bootstrapApp
-                    Log.debug("Resolved bootstrap app: \(bootstrapApp.localizedName ?? "unknown")")
-                } else {
-                    Log.warn("Bootstrap bundleID not found in running apps: \(bundleID)")
-                }
-            } else {
-                Log.debug("No bootstrap context available")
-            }
+        // Cold start: check bootstrap context if no tracked app
+        if result == nil,
+           let bootstrapContext = StateDirectory.readGatheredContext(),
+           let bundleID = bootstrapContext.bundleID,
+           !bundleID.isEmpty,
+           let bootstrapApp = NSRunningApplication.runningApplications(withBundleIdentifier: bundleID).first {
+            result = bootstrapApp
+            lastNonShadeFrontApp = bootstrapApp
+            previousFocusedApp = bootstrapApp
+            Log.debug("Resolved bootstrap app: \(bootstrapApp.localizedName ?? "unknown")")
         }
 
-        Log.debug("capturePreviousFocusedApp returning: \(result?.localizedName ?? "nil") (\(result?.bundleIdentifier ?? "?"))")
         if result == nil {
-            Log.warn("No previous app available for context - this should not happen")
+            Log.warn("No previous app available for context")
         }
         return result
     }
@@ -1535,12 +1421,13 @@ class ShadeAppDelegate: NSObject, NSApplicationDelegate {
         return true
     }
 
-    /// Read clipboard callback
-    private static let readClipboardCallback: @convention(c) (UnsafeMutableRawPointer?, ghostty_clipboard_e, UnsafeMutableRawPointer?) -> Void = { _, _, _ in
+    /// Read clipboard callback (Ghostty 1.3+ API)
+    private static let readClipboardCallback: @convention(c) (UnsafeMutableRawPointer?, ghostty_clipboard_e, UnsafeMutableRawPointer?) -> Bool = { _, _, _ in
         // Simplified - would need to implement clipboard reading
+        return false
     }
 
-    /// Confirm read clipboard callback
+    /// Confirm read clipboard callback (Ghostty 1.3+ API: userdata, request_id, userdata, request_type)
     private static let confirmReadClipboardCallback: @convention(c) (UnsafeMutableRawPointer?, UnsafePointer<CChar>?, UnsafeMutableRawPointer?, ghostty_clipboard_request_e) -> Void = { _, _, _, _ in
         // Auto-confirm clipboard reads for now
     }

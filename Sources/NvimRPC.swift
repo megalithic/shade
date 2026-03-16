@@ -74,7 +74,7 @@ enum NvimRPC {
 
     /// Execute a vim command
     /// - Parameters:
-    ///   - command: Vim command without leading colon (e.g., "ObsidianToday")
+    ///   - command: Vim command without leading colon (e.g., "Obsidian today")
     ///   - socket: Optional socket path override
     /// - Returns: Success status
     @discardableResult
@@ -200,7 +200,7 @@ extension NvimRPC {
     }
 
     /// Open today's daily note
-    /// Uses ObsidianToday command if available, otherwise computes path
+    /// Uses `Obsidian today` command (new obsidian.nvim syntax), otherwise computes path
     /// - Parameter notesDir: Base notes directory
     /// - Returns: Path to the daily note, or nil on failure
     static func openDailyNote(notesDir: String? = nil) -> String? {
@@ -217,9 +217,9 @@ extension NvimRPC {
 
         Log.debug("NvimRPC: Opening daily note at \(filepath)")
 
-        // Try ObsidianToday first (handles template creation)
+        // Try Obsidian today first (handles template creation)
         // Fall back to direct file open if that fails
-        if executeCommand("ObsidianToday") {
+        if executeCommand("Obsidian today") {
             return filepath
         }
 
