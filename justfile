@@ -63,6 +63,69 @@ release:
 universal:
     swift build -c release --arch arm64 --arch x86_64
 
+# Create and push a git tag (triggers release workflow)
+# Usage: just tag v0.1.0
+tag version:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    
+    TAG="{{version}}"
+    
+    # Validate tag format
+    if [[ ! "$TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+        echo "✗ Invalid tag format: $TAG"
+        echo "  Expected: vX.Y.Z (e.g., v0.1.0)"
+        exit 1
+    fi
+    
+    # Fetch remote tags
+    git fetch --tags origin 2>/dev/null
+    
+    # Check if tag already exists on remote
+    REMOTE_TAGS=$(git ls-remote --tags origin 2>/dev/null | grep -oE 'refs/tags/v[0-9]+\.[0-9]+\.[0-9]+$' | sed 's|refs/tags/||' | sort -V)
+    
+    if echo "$REMOTE_TAGS" | grep -qx "$TAG"; then
+        echo "✗ Tag $TAG already exists on remote!"
+        echo ""
+        echo "Existing tags on origin:"
+        echo "$REMOTE_TAGS" | sed 's/^/  /'
+        echo ""
+        echo "Use a new version number, or delete the remote tag first:"
+        echo "  git push origin :refs/tags/$TAG"
+        exit 1
+    fi
+    
+    if [[ -n "$REMOTE_TAGS" ]]; then
+        echo "Existing tags on origin:"
+        echo "$REMOTE_TAGS" | sed 's/^/  /'
+        echo ""
+    fi
+    
+    echo "Creating tag: $TAG at $(git rev-parse --short HEAD)"
+    
+    # Create git tag at HEAD (colocated jj/git repo)
+    git tag -f "$TAG" HEAD
+    
+    echo "Pushing tag to origin..."
+    git push origin "refs/tags/$TAG"
+    
+    echo ""
+    echo "✓ Tag $TAG pushed to origin"
+    echo "  Release workflow should start shortly."
+    echo "  Check: https://github.com/megalithic/shade/actions"
+
+# List all tags (local and remote)
+tags:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    
+    echo "Local tags:"
+    git tag -l 'v*' --sort=-v:refname | head -10 | sed 's/^/  /' || echo "  (none)"
+    
+    echo ""
+    echo "Remote tags (origin):"
+    git ls-remote --tags origin 2>/dev/null | grep -oE 'refs/tags/v[0-9]+\.[0-9]+\.[0-9]+$' | sed 's|refs/tags/||' | sort -rV | head -10 | sed 's/^/  /' || echo "  (none)"
+
 # Create .app bundle (gives proper bundle ID for macOS/Hammerspoon)
 bundle config="debug":
     #!/usr/bin/env bash
