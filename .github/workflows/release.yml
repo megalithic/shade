@@ -68,9 +68,6 @@ jobs:
           - os: macos-26        # Apple Silicon (M1/M2/M3) - Xcode 26
             arch: arm64
             zig_target: aarch64-macos
-          - os: macos-13        # Intel - older Xcode but OK for x86_64
-            arch: x86_64
-            zig_target: x86_64-macos
 
     runs-on: ${{ matrix.os }}
     env:
